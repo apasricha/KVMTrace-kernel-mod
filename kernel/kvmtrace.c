@@ -13,12 +13,12 @@
 /* ================================================================== */
 /* INCLUDES */
 
-
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/kvmtrace.h>
+#include <linux/syscalls.h>
 /* ================================================================== */
 
 
@@ -95,8 +95,7 @@ struct trace {
 	int first_unflushed_index;
 	int buffer_size;
 	int number_buffers;
-	struct file* file;
-	int activator_fd;
+	int fd;
 	char name[16];
 
 };
@@ -109,8 +108,7 @@ struct trace kernel_trace = {
 	first_unflushed_index: 0,
 	buffer_size:           KERNEL_TRACE_BUFFER_SIZE,
 	number_buffers:        NUMBER_KERNEL_TRACE_BUFFERS,
-	file:                  NULL,
-	activator_fd:          0,
+	fd:                    -1,
 	name:                  "kernel"
 };
 /* ================================================================== */
@@ -154,39 +152,21 @@ schedule_kvmtraced (void) {
 /*
  * The entry point for the kvmtraced kernel thread.
  *
- * DEBUG: Emit *something*.
+ * Set the thread to flush its buffer periodically.
  */
 
 int
 kvmtraced (void* unused) {
 
-	/* If the kernel trace file is not yet open, then open it now. */
-	if (kernel_trace.file == NULL) {
-		
-		/* Attempt to open the output file. */
-		fd = sys_open(pathname,
-			      O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
-			      S_IRUSR | S_IWUSR);
-		if (fd == -1) {
-			return VMT_OPEN_FAILURE;
-		}
-
-	/* SFHK: xxx Left off here. Grab a direct pointer to the file structure. */
-	kernel_trace.file = vmt_fd_lookup(fd);
-	if (kernel_trace.file == NULL) {
-		return VMT_FD_LOOKUP_FAILURE;
+	long write_result = sys_write(kernel_trace.fd, "kvmtraced message\n", 18);
+	if (write_result != 0) {
+		printk(KERN_WARNING "kvmtraced(): Write failed.\n");
 	}
 
-	/* Hold onto the task and file descriptor of the activator. */
-	vmt_activator_task = current;
-	kernel_trace.activator_fd = fd;
+	schedule_timeout(0x8fffffffffffffffL);
 
-	/* Attempt to flush the kernel trace buffers. */
-	return flush_trace(&kernel_trace);
-
-	}
-
-	return 0;
+	printk(KERN_ERR "kvmtraced() ended, and never should!\n");
+	return 1;
 
 }
 /* ================================================================== */
@@ -202,13 +182,15 @@ kvmtraced (void* unused) {
 
 static int __init kvmtraced_init (void) {
 
+	int err = 0;
+	static char* kernel_trace_pathname = "/var/log/kernel.trace";
+
 	printk(KERN_NOTICE "Starting kvmtraced\n");
 
 	/*
 	 * Start the kvmtraced thread, which in turn will invoke the
 	 * daemon's core function (kvmtraced()).
 	 */
-	int err = 0;
 	kvmtraced_thread = kthread_run(kvmtraced,
 				       &err,
 				       "kvmtraced");
@@ -217,8 +199,16 @@ static int __init kvmtraced_init (void) {
 		return err;
 	}
 
+	/* Attempt to open the output file. */
+	kernel_trace.fd = sys_open(kernel_trace_pathname,
+				   O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
+				   S_IRUSR | S_IWUSR);
+	if (kernel_trace.fd == -1) {
+		return VMT_OPEN_FAILURE;
+	}
+
 	printk(KERN_NOTICE "kvmtraced: initialized\n");
-	return 0;
+	return VMT_SUCCESS;
 
 }
 /* ================================================================== */
