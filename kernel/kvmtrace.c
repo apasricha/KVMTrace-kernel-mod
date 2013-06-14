@@ -13,6 +13,9 @@
 /* ================================================================== */
 /* INCLUDES */
 
+#include <asm/segment.h>
+#include <asm/uaccess.h>
+#include <linux/buffer_head.h>
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/kernel.h>
@@ -95,7 +98,7 @@ struct trace {
 	int first_unflushed_index;
 	int buffer_size;
 	int number_buffers;
-	int fd;
+	struct file* filp;
 	char name[16];
 
 };
@@ -108,7 +111,7 @@ struct trace kernel_trace = {
 	first_unflushed_index: 0,
 	buffer_size:           KERNEL_TRACE_BUFFER_SIZE,
 	number_buffers:        NUMBER_KERNEL_TRACE_BUFFERS,
-	fd:                    -1,
+	filp:                  NULL,
 	name:                  "kernel"
 };
 /* ================================================================== */
@@ -129,6 +132,71 @@ struct trace kernel_trace = {
 #define VMT_BUFFER_OVERFULL 7
 #define VMT_FAILED_BUFFER_DUMP 8
 #define VMT_INCOMPLETE_BUFFER_DUMP 9
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+/**
+ * Cite: Lifted and adapted from:
+ *       <http://stackoverflow.com/questions/1184274/how-to-read-write-files-within-a-linux-kernel-module>
+ */
+void open_kernel_trace (void) {
+
+    mm_segment_t oldfs;
+    int err = 0;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+    kernel_trace.filp = filp_open("/kvmtrace.kt",
+				  O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
+				  S_IRUSR | S_IWUSR);
+    set_fs(oldfs);
+    if(IS_ERR(kernel_trace.filp)) {
+        err = PTR_ERR(kernel_trace.filp);
+	printk(KERN_ERR "kvmtraced(): Failed to open kernel trace");
+    }
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+void close_kernel_trace (void) {
+    filp_close(kernel_trace.filp, NULL);
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+void write_kernel_trace (unsigned char* data, unsigned int size) {
+
+    mm_segment_t oldfs;
+    int ret;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+
+    ret = vfs_write(kernel_trace.filp, data, size, NULL);
+    if (ret != 0) {
+	    printk(KERN_ERR "kvmtraced(): Failed write_kernel_trace()");
+    }
+
+    set_fs(oldfs);
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+void sync_kernel_trace (void) {
+
+    vfs_fsync(kernel_trace.filp, 0);
+
+}
 /* ================================================================== */
 
 
@@ -158,10 +226,7 @@ schedule_kvmtraced (void) {
 int
 kvmtraced (void* unused) {
 
-	long write_result = sys_write(kernel_trace.fd, "kvmtraced message\n", 18);
-	if (write_result != 0) {
-		printk(KERN_WARNING "kvmtraced(): Write failed.\n");
-	}
+	write_kernel_trace("kvmtraced message\n", 18);
 
 	schedule_timeout(0x8fffffffffffffffL);
 
@@ -183,7 +248,6 @@ kvmtraced (void* unused) {
 static int __init kvmtraced_init (void) {
 
 	int err = 0;
-	static char* kernel_trace_pathname = "/var/log/kernel.trace";
 
 	printk(KERN_NOTICE "Starting kvmtraced\n");
 
@@ -200,12 +264,11 @@ static int __init kvmtraced_init (void) {
 	}
 
 	/* Attempt to open the output file. */
-	kernel_trace.fd = sys_open(kernel_trace_pathname,
-				   O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
-				   S_IRUSR | S_IWUSR);
-	if (kernel_trace.fd == -1) {
-		return VMT_OPEN_FAILURE;
-	}
+	open_kernel_trace();
+
+	/* Try to write something to the kernel trace. */
+	write_kernel_trace("Test message!", 13);
+	sync_kernel_trace();
 
 	printk(KERN_NOTICE "kvmtraced: initialized\n");
 	return VMT_SUCCESS;
@@ -216,8 +279,22 @@ static int __init kvmtraced_init (void) {
 
 
 /* ================================================================== */
-/* MODULE INITIALIZATION */
-module_init(kvmtraced_init)
+static void __exit kvmtraced_exit (void)
+{
+
+	/* Close the kernel trace if it is open.  We do so to achieve a flush. */
+	close_kernel_trace();
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+/* MODULE STATEMENTS */
+
+module_init(kvmtraced_init);
+module_exit(kvmtraced_exit);
 /* ================================================================== */
 
 
