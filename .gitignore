@@ -16,5 +16,8 @@
 *.out
 *.app
 
+# Auto-save emacs files.
+*~
+
 # Temporary compilation intermediate files.
 *.*.cmd

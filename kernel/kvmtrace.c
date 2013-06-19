@@ -99,6 +99,7 @@ struct trace {
 	int buffer_size;
 	int number_buffers;
 	struct file* filp;
+	int done;
 	char name[16];
 
 };
@@ -112,6 +113,7 @@ struct trace kernel_trace = {
 	buffer_size:           KERNEL_TRACE_BUFFER_SIZE,
 	number_buffers:        NUMBER_KERNEL_TRACE_BUFFERS,
 	filp:                  NULL,
+	done:                  0,
 	name:                  "kernel"
 };
 /* ================================================================== */
@@ -148,7 +150,7 @@ void open_kernel_trace (void) {
 
     oldfs = get_fs();
     set_fs(get_ds());
-    kernel_trace.filp = filp_open("/kvmtrace.kt",
+    kernel_trace.filp = filp_open("/tmp/kvmtrace.kt",
 				  O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
 				  S_IRUSR | S_IWUSR);
     set_fs(oldfs);
@@ -175,11 +177,12 @@ void write_kernel_trace (unsigned char* data, unsigned int size) {
 
     mm_segment_t oldfs;
     int ret;
+    loff_t pos = kernel_trace.filp->f_pos;
 
     oldfs = get_fs();
     set_fs(get_ds());
 
-    ret = vfs_write(kernel_trace.filp, data, size, NULL);
+    ret = vfs_write(kernel_trace.filp, data, size, &pos);
     if (ret != 0) {
 	    printk(KERN_ERR "kvmtraced(): Failed write_kernel_trace()");
     }
@@ -226,11 +229,37 @@ schedule_kvmtraced (void) {
 int
 kvmtraced (void* unused) {
 
-	write_kernel_trace("kvmtraced message\n", 18);
+	printk(KERN_NOTICE "In kvmtraced\n");
 
-	schedule_timeout(0x8fffffffffffffffL);
+	/* Try repeatedly until it works. */
+	while (!kernel_trace.done) {
 
-	printk(KERN_ERR "kvmtraced() ended, and never should!\n");
+		/* Attempt to open the output file. */
+		printk(KERN_NOTICE "kvmtraced: Trying to open...\n");
+		open_kernel_trace();
+		if (IS_ERR(kernel_trace.filp)) {
+
+			printk(KERN_NOTICE "kvmtraced: Open failed, sleeping...\n");
+			__set_current_state(TASK_INTERRUPTIBLE);
+			schedule_timeout(1000);
+
+		} else {
+			printk(KERN_NOTICE "kvmtraced: File opened\n");
+			
+			/* Try to write something to the kernel trace. */
+			write_kernel_trace("Test message!", 13);
+			printk(KERN_NOTICE "kvmtraced: Wrote to the kernel trace\n");
+			sync_kernel_trace();
+			printk(KERN_NOTICE "kvmtraced: Sync'ed kernel trace\n");
+			close_kernel_trace();
+			printk(KERN_NOTICE "kvmtraced: Closed the kernel trace\n");
+
+			kernel_trace.done = 1;
+		}
+
+	}
+
+	printk(KERN_ERR "kvmtraced: ended, and never should!\n");
 	return 1;
 
 }
@@ -262,13 +291,6 @@ static int __init kvmtraced_init (void) {
 		printk(KERN_ERR "kvmtraced: unable to create thread %i\n", err);
 		return err;
 	}
-
-	/* Attempt to open the output file. */
-	open_kernel_trace();
-
-	/* Try to write something to the kernel trace. */
-	write_kernel_trace("Test message!", 13);
-	sync_kernel_trace();
 
 	printk(KERN_NOTICE "kvmtraced: initialized\n");
 	return VMT_SUCCESS;
