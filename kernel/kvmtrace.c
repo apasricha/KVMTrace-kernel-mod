@@ -13,6 +13,7 @@
 /* ================================================================== */
 /* INCLUDES */
 
+#include <asm/msr.h>
 #include <asm/segment.h>
 #include <asm/uaccess.h>
 #include <linux/buffer_head.h>
@@ -29,7 +30,7 @@
 /* ================================================================== */
 /* STATIC VARIABLES */
 
-static int kvmtrace_state = 0;
+int kvmtrace_state = 0;
 /* ================================================================== */
 
 
@@ -38,13 +39,13 @@ static int kvmtrace_state = 0;
 /* TRACE LOGGING DEFINITIONS */
 
 /* The task for kvmtraced. */
-static struct task_struct* kvmtraced_thread = NULL;
+struct task_struct* kvmtraced_thread = NULL;
 
 /*
  * A single structure into which information about a kernel event can
  * be recorded before calling emit_kernel_record().
  */
-static kernel_event_s kernel_event;
+kernel_event_s kernel_event;
 
 /* An array mapping decimal indices to hexidecimal characters. */
 const char hex_table [] = {'0', '1', '2', '3', '4', '5', '6', '7',
@@ -217,7 +218,7 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 
     mm_segment_t old_fs;
     int ret;
-    loff_t pos = kernel_trace.filp->f_pos;
+    loff_t pos = kernel_trace_filp->f_pos;
 
     timestamp_t cycle_timestamp;
     timestamp_t reference_timestamp;

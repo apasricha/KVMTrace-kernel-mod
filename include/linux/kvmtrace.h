@@ -7,9 +7,9 @@
  * Determine whether this is 32- or 64-bit.
  */
 #if defined KVMTRACE_32_BIT
-typedef kvmt_word_size_t uint32_t;
+typedef uint32_t kvmt_word_size_t;
 #else
-typedef kvmt_word_size_t uint64_t;
+typedef uint64_t kvmt_word_size_t;
 #endif
 
 /**
