@@ -1,0 +1,609 @@
+===================================================
+Linux w/ kVMTrace (kernel Virtual Memory Reference Tracing)
+Scott F. Kaplan -- sfkaplan@cs.amherst.edu
+VMT-modified file
+============================================
+
+
+
+========================================================================
+-VMTrace1 (18 July 2003):
+
++++++
+IMPORTANT (23 July 2003): A bug was found that causes this patch to
+produce invalid results.  -VMTrace2 fixes this bug.  Specifically,
+when a PTE is evicted from the EVMS, the PTE is correctly disabled,
+but that the TLB is _not_ correctly flushed.  Therefore, a copy of the
+enabled PTE may remain in the TLB, and references through that PTE
+will incorrectly succeed.
++++++
+
+This patch creates an ``evicted virtual mapping set (EVMS)'' of PTEs
+that are enabled.  At every page fault, the PTE responsible for the
+fault is enabled and added to this set.  At this moment, the a record
+of this reference to the PTE will be recorded if reference tracing has
+been activated (see below).
+
+The size of the set is currently determined by a compile-time
+constant, VMT_EVMS_SIZE, found in `mm/memory.c'.  When the set fills,
+a PTE that has been in the set the longest (that is, FIFO) is evicted
+from the set and thus disabled.  Any future references will cause a
+page fault.  When a disabled PTE causes a page fault, it is simply
+enabled and added to the EVMS again, while some other PTE may be
+evicted.
+
+Since PTEs can be creased not just by page faults, but also by
+duplication of page tables caused by fork() operations, we also
+capturing such duplication.  All PTEs of the child page table are
+disabled.
+
+Note that when a mapping is eliminated, we must ensure that it is not
+part of the EVMS.  If it is, we must nullify that entry of the EVMS.
+Otherwise, a PTE may disappear, but the EVMS holds a pointer to it,
+and then we will try to disable that no-longer-existing PTE.  Thus,
+when an unmapping occurs, the PTE is removed from the set.
+
+It is technically possible that a mapping could be in the EVMS when
+the swap-out/page-reclaiming mechanisms destroy it.  For this case to
+obtain, either the EVMS would need to be large, or the aforementioned
+mechanisms unusual.  Nonetheless, when a mapping is destroyed by
+try_to_swap_out(), we ensure that it is not in the EVMS.
+
+This version has limitations that will be addressed in future
+versions:
+
+1) Dirtiness is not tracked.
+
+2) Output is the /var/log/messages via printk().  There is some code
+   in this version that will serve as the beginnings of a better
+   output mechanism, but the function of the output is limited.
+   Later, output should be possible to files, or better yet, to
+   sockets (so that reference handling is not itself traced within
+   this system).
+
+3) Kernel events are not logged.  Fusion with the Laplace kernel's
+   recording of mapping, unmapping, fork, exit, read, write, and other
+   critical kernel events will be added later.
+
+4) Recording of references is currently enabled through a bastardized
+   use of the munmap() system call.  By passing values that are
+   extremely unlikely and not even valid for a real munmap() call, a
+   user-level application can activate and deactivate the logging of
+   references.
+========================================================================
+
+
+
+========================================================================
+-VMTrace2 (July 2003):
+
+This version addresses the first limitation listed above.  Dirtiness
+will be tracked using the implementation described here.
+
+When a page fault occurs, it is known whether or not the faulting
+reference was a due a store operation.  If so, the associated PTE can
+immediately be marked as ``dirty''.  More subtle is the case of a page
+whose initial fault is due to a load operation.  Initially, the
+mapping is clean within the EVMS.  However, it may later be dirtied
+before it is evicted from the EVMS, and we must be able to capture
+that case.
+
+The PTE's own dirty bit, set in hardware by a store operation, can be
+leveraged to determine dirtiness within the EVMS.  Specifically, if
+there is a page fault on a PTE due to a load operation, then we can
+store value of the existing dirty bit and clear that bit in the PTE.
+Upon eviction from the EVMS, we can examine the PTE's dirty bit to
+determine if it has been modified.  If it has not been dirtied, we can
+restore the value of the bit prior to its insertion into the EVMS.
+
+Note that records will be emitted to the reference stream as PTEs are
+_evicted_ from the EVMS.  Only upon eviction do we know if a dirtying
+reference has occured, and so only then can mark the reference record
+as a read or write operation.  However, unmappings complicate the
+situation.  A PTE that has been inserted into the EVMS but not yet
+evicted may be deleted from the EVMS if that PTE's mapping is
+destroyed.  It would be an error to emit a reference record for these
+PTEs upon their deletion, as the order would not be the same as the
+order of first reference that brought each PTE into the EVMS.
+
+Therefore, a deleted EVMS must be marked as such.  Upon its eviction,
+a record for it will be emitted, but there will be no attempt to
+disable the mapping since it does not exist.  Furthermore, a later
+attempt to insert a PTE at the same location will not be considered a
+collision, as the mapping is a different one.
+
+A bug was also fixed from -VMTrace1.  Specifically, upon eviction, a
+PTE will be disabled.  Due to that change, the TLB should its copy of
+that PTE flushed.  To do so, the virtual address to which the PTE
+corresponds must be obtained -- something that -VMTrace1 did not do.
+Using code borrowed from Rik van Riel's -rmap patches, we introduced
+functions in include/linux/vmtrace.h that allow one to derive the mm
+and virtual address to which a PTE corresponds from the PTE itself.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.2pre1 (February 2004)
+
+The primary change here is that -VMTrace2 (a.k.a. -kVMTrace2) was
+ported to use the UML 2.4.0-v8 patch, since previous UML patches were
+not compatible with the RedHat 9 default kernel.
+
+Some debugging has revealed that a bug in previous versions is
+preventing one page, which seems to be the top-of-the-stack page for
+each process, from being tracked at all.  It is mapped without having
+its reference bit disabled, but it is never in the EVMS.  It's only
+one page, but it's also an important page in some sense, so it would
+be good to fix this bug.  Assertions and run-time checks currently
+establish that no other page remains untracked by kVMTrace.
+
+Reference trace output was properly added.  Specifically, a single
+`activator process' must perform the system call to activate reference
+tracing.  It must then remain live for reference tracing to continue,
+and it must issue the system call to deactivate reference tracing.
+The file is opened and closed using the standard sys_open() and
+sys_close() functions, where the file descriptor is process specific
+(and thus implies the need for the process to remain alive during
+reference tracing).  A new file writing function (a derivative of
+sys_write()) was introduced, along with similarly derivative
+supporting functions, so that any process could request output to this
+file.  (kVMTrace keeps a direct pointer to the file structure to avoid
+process-specific file descriptor lookups.)
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.2pre2 (February 2004)
+
+The interface with the activator has been amended to include kernel
+tracing.  The activator begins by activating kernel tracing, and then
+allows the user to toggle reference tracing any number of times.  Upon
+exiting, the activator deactivates reference tracing (if appropriate)
+and kernel tracing.
+
+This version of kernel tracing merely records all of the interesting
+kernel events, as established by Laplace.  Later versions must buffer
+kernel events from the beginning of kernel execution until the
+activator runs and allows that buffer to be dumped into a file.  For
+now, this version just establishes the interface for kernel tracing
+itself without this pre-activator buffering.
+
+A subtle bug in mm/memory.c:copy_page_range() was also fixed.
+kVMTrace was not recording duplicated PTEs that pointed to invalid or
+(more likely of significance) reserved pages.  Now it does.
+========================================================================
+
+
+
+========================================================================
+-uml-8-kVMTrace-v0.3 (31 May 2004)
+
+I chose to skip a final v0.2 since I had a numebr of directories with
+the v0.2 label.  The v0.3 version contains a number of critical
+changes:
+
+  1) UML patch v8 for the 2.4.20 kernel is used now as a basis for
+     kVMTrace v0.3 so that the compiled UML kernels would run on Red
+     Hat 9 systems.
+
+  2) At least one bug was found that caused so-called ``funny PTEs''
+     -- that is, PTEs that, at program exit time, were found to be
+     enabled and yet not part of the EVMS.  Specifically, the first
+     page of the process stack, created during the fork() of a new
+     process, is allocated and populated with the command line values
+     and environment variables.  Thus, the page is allocated and
+     mapped without being touched by the process itself, thus
+     incurring no fault.  We now disable that page correctly.
+
+     However, funny PTEs still exist.  They seem not to occur under
+     UML, but they do under i386 kernels.  Moreover, the virtual pages
+     whose PTEs are founds to be enabled without being in the EVMS at
+     process exit time (or unmapping time) are all from mmap()ed
+     libraries, and references to them _are_ recorded into the trace.
+     Whether this error occurs ``harmlessly'' after all real
+     references are performed, or whether some references to these
+     pages are lost is unclear.
+
+  3) The buffering and output to files of the traces have been
+     significantly reworked to avoid any races.  A circular ring of
+     buffers are used to build up trace output.  Only once a buffer is
+     full is it marked for flushing and a separate (new) kernel
+     thread, kvmtraced, is scheduled.  It will take care of performing
+     the blocking system call to flush the output on any full buffers
+     for each trace; meanwhile other tasks can continue to push new
+     records into the rings of buffers.  This approach is cleaner, has
+     successfully avoided any missing or mandled records or crashes
+     for UML or i386 kernels, and should make for a good model for
+     per-CPU tracing on SMP/SMT systems later.
+
+The next version should use the referenced bit much as kVMTrace
+currently manages the dirty bit so that it can record _re-referencing_
+of pages in the EVMS.  This approach is likely to be valuable to
+simulation of 2Q/LIRS/ARC/CAN policies.  Furthermore, we will move
+kVMTrace code into its own module (rather than riding entirely on
+mm/memory.c).  Finally, we will try to finally pin down the source of
+the remaining ``funny PTE'' occurrences.
+========================================================================
+
+
+
+========================================================================
+-uml-v8-kVMTrace-v0.4pre1
+3 June 2004
+
+As promised with v0.3, this version begins the proposed changes by
+splitting kVMTrace code into its own module, `mm/kvmtrace.c'.  In
+creating this version, I uncovered a minor error in UML 2.4.20 v8
+whereby the declaration of `errno' is no longer covered by the
+headers included when using gcc 3.2.3 on Red Hat Enterprise Linux 3.
+A simple inclusion of <errno.h> takes care of the problem.
+
+Re-reference tracking will be next, and the funny PTEs (which persist)
+will follow that.
+========================================================================
+
+
+
+========================================================================
+-uml-v8-kVMTrace-v0.4pre2
+17 June 2004
+
+First, this version fixes the ``funny PTE'' problem.  Specifically,
+previous versions did not acount for the user-level ability to set
+page protections with mmap() and mprotect().  The latter, in
+particular, can directly alter a PTE.
+
+To handle this problem, this version introduces the idea of `kernel'
+and `user' disablings.  We use two extra bits in the PTE to keep track
+of _why_ a PTE has been disabled, since it may have acquired that
+status by either or both means.  With that information, we can avoid
+prematurely enabling a page when one of the two disablings should
+still obtain.  This solution has prevented any funny PTEs from
+appearing.  The code has a number of BUG_ON() conditions to ensure
+that the disabling bits are managed correctly at all times.
+
+Also, this version still contains (as previous versions did), for
+debugging purposes, an explicit `record number' field for each record
+in each trace.  This should be removed soon, after further testing.
+========================================================================
+
+
+
+========================================================================
+-uml-v8-kVMTrace-v0.4pre3
+18 June 2004
+
+[Note: This version contains an error for UML in
+include/asm-um/pgtable.h:pte_disabled().  Specifically, the return
+condition is incorrect (the test of the present-bit should be
+negated.  Later versions fix this bug.]
+
+This version tracks re-referencing.  Specifically, once a PTE has
+drifted down to a certain position in the EVMS's FIFO queue, its
+reference bit is cleared.  Currently we perform this action at the 5th
+position, since one instruction may use 4 pages at once, and thus we
+conservatively want to capture any re-reference to pages that have not
+be referenced by the current, faulting instruction.  Upon eviction
+from the EVMS, the reference bit is examined to establish a
+re-referencing.  We also set the bit again, since, under normal
+circumstances, it would not yet have been cleared.
+
+Additionally, this version changes the format of the reference trace
+in order to save space.  We considered binary output, but discovered
+that text output with difference encoding is likely to be smaller.
+Specifically, each reference trace record now takes the following
+format, with a field listing:
+
+  R 23b3 3be 0 400b3
+
+1) The tag, r/w/R/W for single/multiple read/write.
+
+2) A difference encoded cycle timestamp, expect to be 3 to 5
+   characters.
+
+3) A record number (NOT difference encoded).  Note that we do not
+   difference encode this number because it is used for debugging
+   purposes that could not be fulfilled if records disappeared or were
+   misordered.
+
+4) A change encoded context ID.  Zero indicates no change in context,
+   non-zero indicates that the value is the new context ID.  Typically
+   1 character (for zero), but occassionally 5 for a new context.
+
+4&5) The virtual page number (NOT difference encoded).  Given that we
+     would need to indicate the sign, we would save little by
+     difference encoding this value.
+
+Finally, this version removes debugging code that should have been
+removed in v0.4pre2 -- specifically, code used in analyzing the funny
+PTE problem.  The next version should (finally) remove the `record
+number' field from both traces, and should insert a `reference
+timestamp' field (through virtual time approximation or performance
+counters).
+========================================================================
+
+
+
+========================================================================
+-uml-v8-kVMTrace-v0.4
+10 August 2004
+
+This patch admittedly has too many changes from the previous one.
+Chalk it up to poor discipline.
+
+Here, we finally remove the `record number' field.  Problems with
+malformed, skipped, or misordered records have been eliminated, and so
+this field is no longer helpful.
+
+We also introduce a `reference timestamp' field, to both traces,
+indicating the number of user-level references that have been
+performed for that task (that is, `virtual reference time').  This
+value appears after the cycle timestamp in every reference and kernel
+record.
+
+In this version, we use the task_struct.times.tms_utime value,
+maintained by the clock interrupt handlers (invoked HZ calls/second),
+to estimate the amount of user-level activity and thus the amount of
+user-level referencing.  This approach is a hack.  It will keep track
+of user-level referencing very roughly.  We note that common HZ values
+(100 Hz) are coarse-grained enough that the number of user-level
+references will move in large jumps.  It's also not clear how good an
+estimate this approach provides.  The next version will attempt to use
+Pentium 4/Xeon performance counters to obtain a much more accurate
+estimate.
+
+We also use the task_struct.times values to emit, at exit time, the
+total number of user-level and system-level virtual CPU seconds as the
+task completes.
+
+We now emit, during the initial creation of the stack
+(fs/exec.c:setup_arg_pages()), during expansions of the stack
+(mm/memory.c:expand_stack()), and during the allocation of pages onto
+the heap (mm/memory.c:do_brk()), an anonymous memory mapping record.
+Thus, _all_ mappings are emitted, and a post-processor can validate
+all virtual memory references against those mappings.
+
+Additionally, kVMTrace now records the uses of mremap() and shmat(),
+which are system calls that we failed previously to cover.  Mostly
+these are recording the usual mmap() and munmap() kernel event
+records.  One exception is that for a shmat(), we need different
+identifying information for the shm segment, and so we had to
+introduce a new record type.
+
+[Note: Fixed the bug for UML in
+include/asm-um/pgtable.h:pte_disabled().  See above for more details.]
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.4.1
+18 August 2004
+
+Fixed a critical bug in mremap() handling for regions that are moved.
+First, we did not delete PTEs from the original region's location.
+Second, we called kernel_disable_page_range() incorrectly (passing a
+length instead of an ending address), thus causing present PTEs in the
+destination range to be enabled yet not in the EVMS.
+
+These problems have been fixed, but there are two others than need
+attention.  First, with mremap(), if an anonymous region is moved,
+then it is insufficient, for the purposes of tracking shared space,
+simply to record the unmapping and the new mapping.  We need to
+introduce an explicit, new kernel record for regions that move, thus
+allowing the post-processor to discover movements of shared, anonymous
+spaces.
+
+Second, activating reference tracing slows execution by a noticeable
+amount.  Emitting reference records requires both delta encoding and
+the creation of a textual representation.  We may be able to reduce
+these overheads by directly emitting binary values (perhaps
+eliminating the difference encoding itself).  Some form of compression
+would be nice, but it's likely to slow execution and require some
+cautious implementation.
+
+Note, finally, that UMLinux support has been largely neglected, and
+getting it to compile and work may require some effort at this stage.
+There is nothing yet to prevent it from working, however, since use of
+CPU performance counters has not yet been implemented.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.4.2
+6 September 2004
+
+First, a minor fix, which is that the collegepro.config file (for our
+local test system) now includes sound support, which seems to work.
+
+Second, the primary change of this version addresses the failures of
+mremap() handling mentioned above.  Specifically, upon a remapping
+that actually moves (rather than merely extending or shrinking) a
+virtual page range, kVMTrace now emits a special record for that
+operation.  kVMTrace supresses the normal munmap() record that would
+occur as part of this operation.  Note, again, that this change is
+necessary for shared, anonymous spaces that are remapped --
+specifically, if kVMTrace only emits the unmapping and new mapping of
+this space, a consumer will be unable to determine that the new
+virtual page range corresponds to existing canonical pages.  With this
+special record, that correlation can be maintained.
+
+Finally, we observe a bug that affects all previous versions of
+kVMTrace, and that we seek to fix in the next version:  handling of
+dirty-but-deleted pages in the EVMS.  Specifically, a PTE in the EVMS
+may be dirty, but when it is then deleted, the PTE itself may take on
+other values.  Upon eviction (and thus the emission of a record),
+kVMTrace looks at the _current_ PTE dirty bit -- a bit that no longer
+corresponds to the deleted PTE for which referencing actually
+happened.  Thus, the wrong dirtiness may be logged.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.4.3
+9 September 2004
+
+This version fixes the bug mentioned above in v0.4.2.  At the time
+that a PTE is deleted from the EVMS, we not only mark the entry as
+deleted, but we record, at that moment, the referenced and dirty bits
+of the PTE.  When that PTE is evicted (and thus a record of its
+reference logged), the recorded youth and dirtiness are used instead
+of the actual PTE's current referenced and dirty bits at that moment.
+
+It also fixes another bug that is best described by an example:
+Consider a COW-shared page A, where the following sequence of events
+occurs:
+
+  1) Page A is read at time t (insert PTE into EVMS).
+  2) A write is attempted on A, causing a fault at time t+i.
+  3) A COW operation is logged at (roughly) time t+i.
+  4) The write is retried and dirties A at t+i+j.
+  5) The PTE is evicted and the reference to A is logged as a _write_
+     reference at time t.
+
+Note that, for a post-processor, the write will seem to appear
+_before_ the COW.  Worse, the logged information is inaccurate because
+the initial read is performed on one canonical page, but the write is
+performed on another canonical page.  Thus, combining these references
+into a single record causes critical information to be lost.
+
+To fix this problem, a COW operation will cause the PTE, if present,
+to be deleted.  Thus, after the COW operation is fully handled (and
+logged), the PTE will be inserted anew into the EVMS with a timestamp
+of t+i+j.
+
+Note that this version compiles under UML, but it doesn't run (an
+immediate core dump) under RedHat Enterprise Linux 3.0.  In fact, this
+kernel and UML version, even without the kVMTrace, has this problem.
+It does, though, at least compile.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.5pre1
+September 2004
+
+The primary change is that the reference trace output is in binary.
+This change should modestly increase the trace size and output
+bandwidth requirements, but it will also reduce fault handling times.
+
+Specifically, when a reference occurs, the reference record structure
+into which the values are placed are directly in the trace buffer
+space.  The binary structure size is larger than the average text
+representation (given the previous use of difference encoding), but no
+work is performed to convert the log record into text format, and no
+work is done to perform the difference encoding itself.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.5pre2
+March 2005
+
+Real systems with SEGQ structures (Linux among them) tend not to use
+pure FIFO.  They either use CLOCK or some hybrid CLOCK/FIFO/ad-hoc
+policy for the leading segment.  Thus, this version provides the
+compile-time option to use a CLOCK policy to manage the EVMS.
+
+Although experiments show that FIFO-reduction performs yields low
+error, CLOCK-reduction does as well and is more readily believable to
+most as an LRU approximation.  With such CLOCK-reduced traces, we can
+also claim that the traces provide input comparable to what could be
+managed by a real system.  We can use, here, very large CLOCK sizes,
+thus yielding realistic results for real-system replacement while
+monitoring other effects (e.g. sleep times, paging bursts, etc.) over
+much, much longer runs.
+
+Finally, the handling of re-referencing is substantially changed.
+Previous versions took advantage of the FIFO-only management of the
+EVMS, simply manipulating the entries that trailed some number of
+entries behind the insertion point.  Since that strategy does not work
+for CLOCK, we generalize the solution splitting the EVMS into two
+segments, where the first evicts its entries into the second.  As an
+entry moves between segments, its PTE's reference bit is cleared, thus
+allowing kVMTrace to detect subsequent references through that PTE.
+
+For simplicity, and because the leading segment is intended to be
+quite small (often as small as the instruction set allows), we always
+manage it with FIFO, with either FIFO or CLOCK managing the second,
+often much larger segment.
+
+Along with these changes, I simplified the interface exported by
+kVMTrace to insert/evict PTE's, making a single call to
+`insert_into_evms()' perform all of these tasks.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.5pre3
+April 2005
+
+This version adds the logging of two critical events previous not
+recorded: The elongation and truncation of files.  Without explicitly
+recording the length of a file at each moment, a simulator cannot know
+whether a reference to a file page represents the first reference to
+that page (requiring only a kernel-level allocation of a new page) or
+a later reference to that page (potentially requiring the page to be
+swapped in from disk).  kVMTrace must therefore log the following
+information:
+
+  A) The current length of a file when it is opened.
+  B) File truncations.
+
+Note that we do not need explicitly to log elongations.  If the
+consumer knows the current length and sees a reference to a page
+beyond that length, then it can observe that the reference is to a
+newly created page and not to some previously existing one.
+Truncations, however, must be logged so that previously existing pages
+can be discarded and new references to those locations in the address
+space identified as references to fundamentally new pages.
+========================================================================
+
+
+
+========================================================================
+-kVMTrace-v0.5.0
+May 2005
+
+This version addresses a bug (successfully?) in the previous version
+where, in is_evms_member(), the debugging version works correctly and
+the non-debugging version does not.  It should (we hope) work
+correctly in this version.
+
+Additionally, this version adds logging of additional information
+about file identities.  Specifically, we emit whether each file
+(recorded during opening and mapping operations) is a file, a pipe, or
+a device.
+
+Finally, this version fixes an important bug regarding when VFS read
+and write operations are logged.  Previously, they were recorded
+before the actual read/write operation was performed, and therefore
+failed operations would be recorded as actual ones.  Even successful
+operations would be logged based on the requested number of bytes,
+rather than on the actual number of bytes.  This version now logs a
+read operation only if a non-zero number of bytes were actually
+transferred.
+========================================================================
+
+
+========================================================================
+-kVMTrace-3.8.10-v0.6
+2013 July
+
+
+Beginning a port to Linux 3.8.10, in which there are substantial changes.
+First, pointers are now, most commonly, 64-bit.  More importantly, we
+are here decoupling the kernel event gathering from the reference
+gathering.  The latter will now be separately implemented in a substrate
+(like Laplace, using either Bochs or KVM+QEMU).  That work is for later.
+
+The sole purpose of this code is to record relevant kernel events for
+later post-processing.
+========================================================================

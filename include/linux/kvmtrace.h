@@ -4,26 +4,35 @@
 #define _GENERIC_KVMTRACE_H
 
 /**
+ * Determine whether this is 32- or 64-bit.
+ */
+#if defined KVMTRACE_32_BIT
+typedef kvmt_word_size_t uint32_t;
+#else
+typedef kvmt_word_size_t uint64_t;
+#endif
+
+/**
  * Below are types and structures used for recording kernel and
  * reference events.
  */
-typedef unsigned long long int timestamp_t;
-typedef unsigned long page_number_t;
+typedef uint64_t timestamp_t;
+typedef kvmt_word_size_t page_number_t;
 
 /* Types used within the structure. */
 typedef char tag_t;
-typedef unsigned long virtual_address_t;
-typedef unsigned long context_ID_t;
-typedef unsigned short process_ID_t;
-typedef unsigned long inode_ID_t;
-typedef unsigned int device_ID_t;
-typedef unsigned long shm_ID_t;
-typedef unsigned long offset_t;
-typedef unsigned long long file_offset_t;
+typedef kvmt_word_size_t virtual_address_t;
+typedef uint32_t context_ID_t;
+typedef uint16_t process_ID_t;
+typedef uint32_t inode_ID_t;
+typedef uint32_t device_ID_t;
+typedef uint32_t shm_ID_t;
+typedef uint64_t offset_t;
+typedef uint64_t file_offset_t;
 typedef char file_type_t;
 
 /* The length of the buffer used to store filenames. */
-#define filename_buffer_size 32
+#define filename_buffer_size 64
 
 /*
  * The type of a structure into which information about kernel events
@@ -53,13 +62,12 @@ typedef struct kernel_event_struct {
 
 /*
  * The one instance of this structure which will be used everywhere,
- * but is declared in mm/memory.c.
+ * but is declared in kernel/kvmtrace.c.
  */
 extern kernel_event_s kernel_event;
 
 /*
- * Functions that emit kernel and reference events to the appropriate
- * trace.
+ * Functions that emit kernel events to the appropriate trace.
  */
 void emit_kernel_record (kernel_event_s* kernel_event);
 
@@ -70,14 +78,6 @@ void emit_kernel_record (kernel_event_s* kernel_event);
 void string_to_string (char* buffer,
 		       int* buffer_index,
 		       char* source);
-
-/*
- * Write to a normal file from within the kernel. Defined in
- * fs/read_write.c.
- */
-ssize_t vmt_write_record (struct file* file,
-			  const char* buffer,
-			  size_t count);
 
 /*
  * The flag bit for indicating that a given do_munmap() call should
@@ -126,9 +126,7 @@ ssize_t vmt_write_record (struct file* file,
 #define FILE_TYPE_SOCKET            's'
 
 /* VMT DEBUG */
-int evms_valid (void);
 extern int kvmtrace_state;
-extern pte_t** debug_handle;
 
 #endif /* _GENERIC_KVMTRACE_H */
 
