@@ -105,7 +105,7 @@ void close_kernel_trace (void) {
 
 
 /* ================================================================== */
-void write_kernel_trace (unsigned char* data, unsigned int size) {
+void write_kernel_record () {
 
     mm_segment_t oldfs;
     int ret;
@@ -164,8 +164,7 @@ kvmtraced (void* unused) {
 	/* Log forever. */
 	while (1) {
 
-		/* Attempt to open the output file. */
-		printk(KERN_NOTICE "kvmtraced: Trying to open...\n");
+		
 		open_kernel_trace();
 		if (IS_ERR(kernel_trace.filp)) {
 
