@@ -31,6 +31,7 @@
 /* STATIC VARIABLES */
 
 int kvmtrace_state = 0;
+uint32_t references_per_jiffy = 1000000000 / HZ;
 /* ================================================================== */
 
 
@@ -218,21 +219,32 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 
     mm_segment_t old_fs;
     int ret;
-    loff_t pos = kernel_trace_filp->f_pos;
+    loff_t pos;
 
     timestamp_t cycle_timestamp;
     timestamp_t reference_timestamp;
     char content[RECORD_BUFFER_SIZE];
     int index = 0;
+    cputime_t user_time;
+    cputime_t system_time;
 
     /*
      * If this is the first call to emit a record, then open the
-     * output file.
+     * output file.  If the open fails, return without emitting, since
+     * the system may not yet be ready to open the trace file.  [SFHK:
+     * Later, this function should only buffer the event so that no
+     * output to the trace file is lost to early events that precede
+     * file system mounting.]
      */
     if (kernel_trace_filp == NULL) {
 	    open_kernel_trace();
+	    if (IS_ERR(kernel_trace_filp)) {
+		    printk(KERN_NOTICE "kvmtraced: Failed open, skipping emit.\n");
+		    kernel_trace_filp = NULL;
+		    return;
+	    }
     }
-    BUG_ON(kernel_trace_filp != NULL);
+    pos = kernel_trace_filp->f_pos;
 
     /*
      * Construct the record by placing the fields into the buffer one
@@ -249,8 +261,9 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 		  (unsigned char*)&cycle_timestamp,
 		  sizeof(cycle_timestamp));
     content[index++] = ' ';
-    reference_timestamp = ((timestamp_t)current->times.tms_utime *
-			   (timestamp_t)references_per_tick);
+    task_cputime_adjusted(current, &user_time, &system_time);
+    reference_timestamp = ((timestamp_t)user_time *
+			   (timestamp_t)references_per_jiffy);
     int_to_string(content,
 		  &index,
 		  (unsigned char*)&reference_timestamp,
@@ -281,10 +294,6 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 
     case TAG_EXIT: {
 
-	    unsigned long int user_time =
-		    current->times.tms_utime * HZ;
-	    unsigned long int system_time =
-		    current->times.tms_stime * HZ;
 	    int_to_string(content,
 			  &index,
 			  (unsigned char*)&(kernel_event->pid),
@@ -760,9 +769,9 @@ kvmtraced (void* unused) {
 		kernel_event.pid = 0x123;
 		emit_kernel_record(&kernel_event);
 
-		printk(KERN_NOTICE "kvmtraced: Emitted, sleeping...\n");
+		printk(KERN_NOTICE "kvmtraced: Emit attempted, sleeping...\n");
 		__set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(10000);
+		schedule_timeout(10 * HZ);
 
 	}
 
