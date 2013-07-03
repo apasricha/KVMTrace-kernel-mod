@@ -23,6 +23,7 @@
 #include <linux/kthread.h>
 #include <linux/kvmtrace.h>
 #include <linux/syscalls.h>
+#include <stdint.h>
 /* ================================================================== */
 
 
