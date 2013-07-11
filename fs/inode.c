@@ -1390,6 +1390,15 @@ EXPORT_SYMBOL(generic_delete_inode);
  */
 static void iput_final(struct inode *inode)
 {
+//VMT: HERE BECAUSE IN OLD FUNCTION iput IN fs/inode.c RECORDING IS THE FIRST THING DONE AFTER 'if(atomic_dec_and_lock(&inode->i_count, &inode_lock)) do not return', WHICH IN THE NEW VERSION MEANS, CALL iput_final	
+	if(!inode->i_nlink) {
+		kernel_event.tag = TAG_FILE_DELETE;
+		kernel_event.inode = inode->i_ino;
+		kernel_event.major_device = MAJOR(inode->i_devices);
+		kernel_event.minor_device = MINOR(inode->i_devices);
+		emit_kernel_record(&kernel_event);
+	}
+
 	struct super_block *sb = inode->i_sb;
 	const struct super_operations *op = inode->i_sb->s_op;
 	int drop;
@@ -1441,6 +1450,7 @@ void iput(struct inode *inode)
 
 		if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock))
 			iput_final(inode);
+//VMT: RECORDING IN iput_final
 	}
 }
 EXPORT_SYMBOL(iput);

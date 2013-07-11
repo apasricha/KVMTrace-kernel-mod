@@ -2942,6 +2942,11 @@ need_resched:
 		rq->curr = next;
 		++*switch_count;
 
+//VMT: Emit a record of the scheduling. JUST FOLLOW FROM THE OLD CODE METHOD schedule IN kernel/sched.c DOWN TO THIS. 
+		kernel_event.tag = TAG_SCHEDULE;
+		kernel_event.pid = next->pid;
+		emit_kernel_record(&kernel_event);
+		
 		context_switch(rq, prev, next); /* unlocks the rq */
 		/*
 		 * The context switch have flipped the stack from under us

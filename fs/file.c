@@ -633,11 +633,29 @@ void __fd_install(struct files_struct *files, unsigned int fd,
 		struct file *file)
 {
 	struct fdtable *fdt;
+	struct dentry* dentry; /* VMT */
+	struct inode* inode; /* VMT */
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
 	BUG_ON(fdt->fd[fd] != NULL);
 	rcu_assign_pointer(fdt->fd[fd], file);
 	spin_unlock(&files->file_lock);
+//VMT: THE FUNCTION IS ALMOST EXACTLY SIMILAR TO THE OLD ONE fd_install IN fs/open.c. RECORD AFTER write/spin_unlock
+	dentry = file->f_dentry;
+	inode = dentry->d_inode;
+	kernel_event.tag = TAG_FILE_OPEN;
+	kernel_event.pid = current->pid;
+	kernel_event.inode = inode->i_ino;
+	kernel_event.major_device = MAJOR(inode->i_devices);
+	kernel_event.minor_device = MINOR(inode->i_devices);
+	kernel_event.file_offset =
+	  (file_offset_t)inode->i_size;
+	kernel_event.file_type =
+	  determine_file_type(inode->i_mode);
+	strncpy(kernel_event.filename,
+		dentry->d_iname,
+		filename_buffer_size);
+	emit_kernel_record(&kernel_event);
 }
 
 void fd_install(unsigned int fd, struct file *file)
@@ -654,6 +672,7 @@ int __close_fd(struct files_struct *files, unsigned fd)
 {
 	struct file *file;
 	struct fdtable *fdt;
+	struct inode* inode;	
 
 	spin_lock(&files->file_lock);
 	fdt = files_fdtable(files);
@@ -666,6 +685,16 @@ int __close_fd(struct files_struct *files, unsigned fd)
 	__clear_close_on_exec(fd, fdt);
 	__put_unused_fd(files, fd);
 	spin_unlock(&files->file_lock);
+
+//VMT: THIS IS THE SAME AS OLD FUNCTION sys_close IN fs/open.c. RECORD BETWEEN spin/write_unlock AND return filp_close
+	inode = filp->f_dentry->d_inode;
+	kernel_event.tag = TAG_FILE_CLOSE;
+	kernel_event.pid = current->pid;
+	kernel_event.inode = inode->i_ino;
+	kernel_event.major_device = MAJOR(inode->i_devices);
+	kernel_event.minor_device = MINOR(inode->i_devices);
+	emit_kernel_record(&kernel_event);
+
 	return filp_close(file, files);
 
 out_unlock:

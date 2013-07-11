@@ -356,7 +356,7 @@ EXPORT_SYMBOL(do_sync_read);
 
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-	ssize_t ret;
+	ssize_t ret; 
 
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
@@ -373,6 +373,18 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 		else
 			ret = do_sync_read(file, buf, count, pos);
 		if (ret > 0) {
+#if 0
+//VMT: Emit a record of the read operation. SAME AS IN OLD sys_read IN fs/read_write.c, IN if (ret > 0) BEFORE notifying. 
+			struct inode* inode = file->f_dentry->d_inode;
+			kernel_event.tag = TAG_FILE_READ;
+			kernel_event.pid = current->pid;
+			kernel_event.inode = inode->i_ino;
+			kernel_event.major_device = MAJOR(inode->i_dev);
+			kernel_event.minor_device = MINOR(inode->i_dev);
+			kernel_event.file_offset = (file_offset_t)file->f_pos;
+			kernel_event.length = (offset_t)ret;
+			emit_kernel_record(&kernel_event);
+#endif			
 			fsnotify_access(file);
 			add_rchar(current, ret);
 		}
@@ -413,9 +425,12 @@ EXPORT_SYMBOL(do_sync_write);
 ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
+	struct inode* inode = NULL;
 
 	if (!(file->f_mode & FMODE_WRITE))
 		return -EBADF;
+	else 
+		inode = file->f_dentry->d_inode;
 	if (!file->f_op || (!file->f_op->write && !file->f_op->aio_write))
 		return -EINVAL;
 	if (unlikely(!access_ok(VERIFY_READ, buf, count)))
@@ -429,6 +444,17 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 		else
 			ret = do_sync_write(file, buf, count, pos);
 		if (ret > 0) {
+//VMT: Emit a record of the write operation. SAME AS IN OLD sys_write IN fs/read_write.c, IN if (ret > 0) BEFORE notifying. 
+			BUG_ON(inode == NULL);
+			kernel_event.tag = TAG_FILE_WRITE;
+			kernel_event.pid = current->pid;
+			kernel_event.inode = inode->i_ino;
+			kernel_event.major_device = MAJOR(inode->i_dev);
+			kernel_event.minor_device = MINOR(inode->i_dev);
+			kernel_event.file_offset = (file_offset_t)file->f_pos;
+			kernel_event.length = (offset_t)ret;
+			emit_kernel_record(&kernel_event);
+
 			fsnotify_modify(file);
 			add_wchar(current, ret);
 		}
@@ -732,6 +758,35 @@ static ssize_t do_readv_writev(int type, struct file *file,
 	else
 		ret = do_loop_readv_writev(file, iov, nr_segs, pos, fn);
 
+//VMT: Emit a record of a successful read/write operation. PUT IT HERE BECAUSE BY NOW ret HAS BEEN ASSIGNED IN ALL CASES, LIKE IN OLD FUNCTION sys_readv IN fs/read_write.c
+	if (ret > 0 && type == READ) {
+
+		struct inode* inode = file->f_dentry->d_inode;
+		kernel_event.tag = TAG_FILE_READ;
+		kernel_event.pid = current->pid;
+		kernel_event.inode = inode->i_ino;
+		kernel_event.major_device = MAJOR(inode->i_devices);
+		kernel_event.minor_device = MINOR(inode->i_devices);
+		kernel_event.file_offset = (file_offset_t)file->f_pos;
+		kernel_event.length = ret;
+		emit_kernel_record(&kernel_event);
+
+	}
+
+	if (ret > 0 && type == WRITE) {
+
+		struct inode* inode = file->f_dentry->d_inode;
+		kernel_event.tag = TAG_FILE_WRITE;
+		kernel_event.pid = current->pid;
+		kernel_event.inode = inode->i_ino;
+		kernel_event.major_device = MAJOR(inode->i_devices);
+		kernel_event.minor_device = MINOR(inode->i_devices);
+		kernel_event.file_offset = (file_offset_t)file->f_pos;
+		kernel_event.length = ret;
+		emit_kernel_record(&kernel_event);
+
+	}
+
 out:
 	if (iov != iovstack)
 		kfree(iov);
@@ -814,6 +869,7 @@ static inline loff_t pos_from_hilo(unsigned long high, unsigned long low)
 	return (((loff_t)high << HALF_LONG_BITS) << HALF_LONG_BITS) | low;
 }
 
+//VMT: preadv, pwritev, pread64, pwrite64, all call vfs_read, vfs_write, vfs_readv, vfs_writev so one need not add extra recording code in the pread/pwrite as it is in function sys_pread in fs/read_write.c
 SYSCALL_DEFINE5(preadv, unsigned long, fd, const struct iovec __user *, vec,
 		unsigned long, vlen, unsigned long, pos_l, unsigned long, pos_h)
 {

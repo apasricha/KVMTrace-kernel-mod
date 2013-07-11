@@ -875,6 +875,12 @@ void do_exit(long code)
 	/* causes final put_task_struct in finish_task_switch(). */
 	tsk->state = TASK_DEAD;
 	tsk->flags |= PF_NOFREEZE;	/* tell freezer to ignore us */
+
+//VMT: FOLLOWS FROM OLD CODE FUNCTION do_exit IN  kernel/exit.c. WE NEED TO RECORD AFTER CALLING ALL THE exit_... FUNCTIONS AND BEFORE schedule()
+	kernel_event.tag = TAG_EXIT;
+	kernel_event.pid = tsk->pid;
+	emit_kernel_record(&kernel_event);
+
 	schedule();
 	BUG();
 	/* Avoid "noreturn function does return".  */

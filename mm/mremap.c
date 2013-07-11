@@ -421,11 +421,14 @@ static unsigned long mremap_to(unsigned long addr,
 	ret = move_vma(vma, addr, old_len, new_len, new_addr);
 	if (!(ret & ~PAGE_MASK))
 		goto out;
+
 out1:
 	vm_unacct_memory(charged);
 
 out:
 	return ret;
+
+//VMT in SYSCALL_DEFINE5
 }
 
 static int vma_expandable(struct vm_area_struct *vma, unsigned long delta)
@@ -524,6 +527,39 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 						   addr + new_len);
 			}
 			ret = addr;
+
+//VMT: FOUND IT HERE, USING "We need to grow", AND THEN FOLLOWING DOWN JUST LIKE IT IS IN OLD CODE do_mremap IN mm/mremap.c. RECORD BETWEEN ret = addr AND goto out
+//NOTE: i_dev from the old version appears to be i_devices here. 
+			kernel_event.pid = current->pid;
+			kernel_event.address = addr + old_len;
+			kernel_event.length = new_len - old_len;
+			if (vma->vm_file) {
+				kernel_event.tag = TAG_MMAP_FILE;
+				kernel_event.inode =
+					vma->vm_file->f_dentry->d_inode->i_ino;
+				kernel_event.major_device =
+					MAJOR(vma->vm_file->f_dentry->d_inode->i_devices);
+				kernel_event.minor_device =
+					MINOR(vma->vm_file->f_dentry->d_inode->i_devices);
+				kernel_event.file_offset =
+					(file_offset_t)(vma->vm_pgoff +
+							(old_len << PAGE_SHIFT));
+				strncpy(kernel_event.filename,
+					vma->vm_file->f_dentry->d_name.name,
+					filename_buffer_size);
+			} else {
+				kernel_event.tag = TAG_MMAP_ANONYMOUS;
+			}
+			emit_kernel_record(&kernel_event);
+
+			/*
+			 * VMT: Kernel-disable any present PTEs
+			 * created by the above operations.
+			 */
+			kernel_disable_page_range(vma,
+						  addr + old_len,
+						  addr + (new_len - old_len));
+
 			goto out;
 		}
 	}
@@ -548,10 +584,27 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		}
 
 		ret = move_vma(vma, addr, old_len, new_len, new_addr);
+//VMT: JUST AS TAG_MREMAP IS JUST BELOW TAG_MMAP_FILE IN OLD CODE (do_mremap IN mm/mremap.c), IT IS HERE TOO, AS THE END OF THIS IF. 
+		/*
+		 * VMT: Disable any new mappings and then log the move
+		 * of the region, but only if the remapping succeeded.
+		 */
+		vma = find_vma(current->mm, ret);
+		kernel_disable_page_range(vma, ret, ret + new_len);
+		kernel_event.pid = current->pid;
+		kernel_event.address = ret;
+		kernel_event.length = new_len;
+		kernel_event.old_address = addr;
+		kernel_event.old_length = old_len;
+		kernel_event.tag = TAG_MREMAP;
+		emit_kernel_record(&kernel_event);
+
 	}
+
 out:
 	if (ret & ~PAGE_MASK)
 		vm_unacct_memory(charged);
 	up_write(&current->mm->mmap_sem);
+
 	return ret;
 }

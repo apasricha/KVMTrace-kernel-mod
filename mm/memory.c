@@ -1044,6 +1044,7 @@ int copy_page_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	 * readonly mappings. The tradeoff is that copy_page_range is more
 	 * efficient than faulting.
 	 */
+
 	if (!(vma->vm_flags & (VM_HUGETLB | VM_NONLINEAR |
 			       VM_PFNMAP | VM_MIXEDMAP))) {
 		if (!vma->anon_vma)
@@ -1077,6 +1078,15 @@ int copy_page_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 						    mmun_end);
 
 	ret = 0;
+
+//VMT: AFTER cow (here is_cow) IS ASSIGNED A VALUE AND BEFORE dst_pgd IS, FOLLOWING FROM THE OLD CODE IN FUNCTION copy_page_range IN mm/memory.c
+	kernel_event.tag = TAG_DUPLICATE_RANGE;
+	kernel_event.context = (context_ID_t)src->pgd >> PAGE_SHIFT;
+	kernel_event.duplicate_context = (context_ID_t)dst->pgd >> PAGE_SHIFT;
+	kernel_event.address = addr;
+	kernel_event.end_address = end;
+	emit_kernel_record(&kernel_event);
+
 	dst_pgd = pgd_offset(dst_mm, addr);
 	src_pgd = pgd_offset(src_mm, addr);
 	do {
@@ -2848,6 +2858,14 @@ unlock:
 		}
 		page_cache_release(old_page);
 	}
+
+
+//VMT: FOLLOWED OLD FUNCTION do_wp_page IN mm/memory.c TILL BETWEEN page_cache_release(old_page) AND return SOMETHING. BE WARY.
+	kernel_event.tag = TAG_COW_UNMAP;
+	kernel_event.pid = current->pid;
+	kernel_event.address = address;
+	emit_kernel_record(&kernel_event);
+
 	return ret;
 oom_free_new:
 	page_cache_release(new_page);
@@ -3355,6 +3373,15 @@ static int __do_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 				page_mkwrite = 1;
 			}
 		}
+//GOES WITH THE ONLY ASSUMPTION THAT IT IS AFTER AN 'early C-O-W break' AS IT IS IN THE OLD do_no_page IN mm/memory.c. WARY
+		/*
+		 * VMT: Emit that a new logical page was created and
+		 * mapped, starting at the given virtual address.
+		 */
+		kernel_event.tag = TAG_COW_UNMAP;
+		kernel_event.pid = current->pid;
+		kernel_event.address = address;
+		emit_kernel_record(&kernel_event);
 
 	}
 

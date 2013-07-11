@@ -724,6 +724,14 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	 * will align it up.
 	 */
 	rlim_stack = rlimit(RLIMIT_STACK) & PAGE_MASK;
+
+//VMT: Emit a record of an anonymous kernel mapping. DIDN'T KNOW WHERE ELSE TO PUT IT, SO I JUST USED THE SAME FUNCTION AS IN OLD, setup_arg_pages, in fs/exec.c 
+	kernel_event.tag = TAG_MMAP_ANONYMOUS;
+	kernel_event.pid = current->pid;
+	kernel_event.address = mpnt->vm_start;
+	kernel_event.length = mpnt->vm_end - mpnt->vm_start;
+	emit_kernel_record(&kernel_event);
+
 #ifdef CONFIG_STACK_GROWSUP
 	if (stack_size + stack_expand > rlim_stack)
 		stack_base = vma->vm_start + rlim_stack;
@@ -1548,6 +1556,30 @@ static int do_execve_common(const char *filename,
 	current->in_execve = 0;
 	acct_update_integrals(current);
 	free_bprm(bprm);
+
+//VMT: THIS RECORDING FOLLOWS FROM THE OLD CODE FUNCTION do_execve IN fs/exec.c. AS SEEN, IT SHOULD OCCUR BETWEEN execve success AND out CASE.  
+		struct nameidata nd;
+		int err;
+		struct inode* inode;
+
+		BUG_ON(file == NULL);
+		err = path_lookup(filename,
+				  LOOKUP_FOLLOW | LOOKUP_POSITIVE,
+				  &nd);
+		BUG_ON(err);
+		inode = nd.dentry->d_inode;
+		BUG_ON(inode == NULL);
+
+		kernel_event.tag = TAG_EXEC;
+		kernel_event.pid = current->pid;
+		kernel_event.inode = inode->i_ino;
+		kernel_event.major_device = MAJOR(inode->i_devices);
+		kernel_event.minor_device = MINOR(inode->i_devices);
+		strncpy(kernel_event.filename,
+			filename,
+			filename_buffer_size);
+		emit_kernel_record(&kernel_event);
+
 	if (displaced)
 		put_files_struct(displaced);
 	return retval;
@@ -1575,6 +1607,7 @@ out_free:
 out_files:
 	if (displaced)
 		reset_files_struct(displaced);
+
 out_ret:
 	return retval;
 }

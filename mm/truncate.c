@@ -210,6 +210,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	pgoff_t index;
 	pgoff_t end;
 	int i;
+	struct inode* inode;
 
 	cleancache_invalidate_inode(mapping);
 	if (mapping->nrpages == 0)
@@ -291,6 +292,19 @@ void truncate_inode_pages_range(struct address_space *mapping,
 		index++;
 	}
 	cleancache_invalidate_inode(mapping);
+
+//VMT: FINISH THE ENTIRE TRUNCATION FUNCTION AND THEN LOG IT, AS IT IS DONE IN OLD FUNCTION truncate_inode_pages IN mm/filemap.c
+	inode = mapping->host;
+	kernel_event.tag = TAG_FILE_TRUNCATE;
+	kernel_event.inode = inode->i_ino;
+	kernel_event.major_device = MAJOR(inode->i_devices);
+	kernel_event.minor_device = MINOR(inode->i_devices);
+	kernel_event.file_offset = (file_offset_t)start;
+	emit_kernel_record(&kernel_event);
+
+
+//appears again like dev is devices
+
 }
 EXPORT_SYMBOL(truncate_inode_pages_range);
 

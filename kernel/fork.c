@@ -543,10 +543,17 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p)
 	mm->cached_hole_size = ~0UL;
 	mm_init_aio(mm);
 	mm_init_owner(mm, p);
-
+//CHECK THIS!!! CHECK THIS!!!
 	if (likely(!mm_alloc_pgd(mm))) {
 		mm->def_flags = 0;
 		mmu_notifier_mm_init(mm);
+
+//VMT: IS likely(!mm_alloc_pgd(mm)) the same as mm->pgd?? THEN, THIS IS PERFECTLY FOLLOWING DOWN FROM struct mm_init IN kernel/fork.c OF THE OLD CODE. 
+		kernel_event.tag = TAG_CONTEXT_ASSIGNMENT;
+		kernel_event.pid = p->pid;
+		kernel_event.context =
+			((unsigned long)(mm->pgd) >> PAGE_SHIFT);
+		emit_kernel_record(&kernel_event);
 		return mm;
 	}
 
@@ -1220,6 +1227,12 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	if (!try_module_get(task_thread_info(p)->exec_domain->module))
 		goto bad_fork_cleanup_count;
 
+// VMT: Emit information on this fork. JUST FOLLOWING DOWN FROM THE OLD CODE IN METHOD do_fork IN kernel/fork.c, RECORDING SHOULD BE DONE BETWEEN ASSIGNING retvals AND p VARIABLES
+	kernel_event.tag = TAG_FORK;
+	kernel_event.pid = p->pid;
+	kernel_event.parent_pid = current->pid;
+	emit_kernel_record(&kernel_event);
+
 	p->did_exec = 0;
 	delayacct_tsk_init(p);	/* Must remain after dup_task_struct() */
 	copy_flags(clone_flags, p);
@@ -1585,9 +1598,13 @@ long do_fork(unsigned long clone_flags,
 		if (likely(!ptrace_event_enabled(current, trace)))
 			trace = 0;
 	}
+//VMT: RECORDING DONE IN copy_process
 
 	p = copy_process(clone_flags, stack_start, stack_size,
 			 child_tidptr, NULL, trace);
+
+//VMT: THE RECORDING IS DONE IN copy_process BECAUSE ONE CAN FOLLOW THE CODE FROM THE OLD PROGRAM DOWN WHILE GOING DOWN THIS FUNCTION AND THEN JUMPING INTO copy_process AS IT IS NEARLY THE SAME. 
+
 	/*
 	 * Do this prior waking up the new thread - the thread pointer
 	 * might get invalid after that point, if the thread exits quickly.

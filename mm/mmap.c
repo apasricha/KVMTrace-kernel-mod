@@ -1279,6 +1279,7 @@ unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,
 		}
 	}
 
+//VMT: LOOK IN mmap_region FOR RECORDING.
 	return mmap_region(file, addr, len, flags, vm_flags, pgoff);
 }
 
@@ -1531,6 +1532,29 @@ munmap_back:
 	if (correct_wcount)
 		atomic_inc(&inode->i_writecount);
 out:
+//VMT: HERE BECAUSE IT'S EXACTLY LIKE IN THE OLD VERSION. FOLLOWED FROM DO_MMAP_PGOFF TO THIS FUNCTION, GOING ALONG THE DO_MMAP_PGOFF (IN mm/mmap.c) IN THE OLD VERSION. 	
+	kernel_event.pid = current->pid;
+	kernel_event.address = addr;
+	kernel_event.length = len;
+	if (!(flags & MAP_SHMOP)) {
+		if (file) {
+			struct inode* inode = file->f_dentry->d_inode;
+			kernel_event.tag = TAG_MMAP_FILE;
+			kernel_event.inode = inode->i_ino;
+			kernel_event.major_device = MAJOR(inode->i_devices);
+			kernel_event.minor_device = MINOR(inode->i_devices);
+			kernel_event.file_offset = (file_offset_t)pgoff;
+			kernel_event.file_type =
+				determine_file_type(inode->i_mode);
+			strncpy(kernel_event.filename,
+				file->f_dentry->d_name.name,
+				filename_buffer_size);
+		} else {
+			kernel_event.tag = TAG_MMAP_ANONYMOUS;
+		}
+		emit_kernel_record(&kernel_event);
+	}	
+
 	perf_event_mmap(vma);
 
 	vm_stat_account(mm, vm_flags, file, len >> PAGE_SHIFT);
@@ -2098,6 +2122,19 @@ int expand_upwards(struct vm_area_struct *vma, unsigned long address)
 				perf_event_mmap(vma);
 			}
 		}
+//VMT: CHECK THIS, BASED ON FUNCTION expand_stack IN OLD CODE mm/mmap.c. IT IS IN THE END THERE, AND IT APPEARS LIKE THAT ENTIRE FUNCTION IS IN THIS IF, GOING BY THE PLACEMENT OF THE INNER IF'S. 
+		/*
+	 	* VMT: 	Record the mapping of additional anonymous space.
+	 	* Note that we log only the mapping of the new stack space,
+	 	* thus assuming that the mapping of the pre-existing stack
+	 	* space has already been logged.
+		*/
+		kernel_event.tag = TAG_MMAP_ANONYMOUS;
+		kernel_event.pid = current->pid;
+		kernel_event.address = address;
+		kernel_event.length = grow << PAGE_SHIFT;
+		emit_kernel_record(&kernel_event);
+
 	}
 	vma_unlock_anon_vma(vma);
 	khugepaged_enter_vma_merge(vma);
@@ -2167,6 +2204,18 @@ int expand_downwards(struct vm_area_struct *vma,
 				perf_event_mmap(vma);
 			}
 		}
+//VMT: CHECK THIS, BASED ON FUNCTION expand_stack IN OLD CODE mm/mmap.c. IT IS IN THE END THERE, AND IT APPEARS LIKE THAT ENTIRE FUNCTION IS IN THIS IF, GOING BY THE PLACEMENT OF THE INNER IF'S. 
+		/*
+	 	* VMT: 	Record the mapping of additional anonymous space.
+	 	* Note that we log only the mapping of the new stack space,
+	 	* thus assuming that the mapping of the pre-existing stack
+	 	* space has already been logged.
+		*/
+		kernel_event.tag = TAG_MMAP_ANONYMOUS;
+		kernel_event.pid = current->pid;
+		kernel_event.address = address;
+		kernel_event.length = grow << PAGE_SHIFT;
+		emit_kernel_record(&kernel_event);
 	}
 	vma_unlock_anon_vma(vma);
 	khugepaged_enter_vma_merge(vma);
@@ -2185,6 +2234,9 @@ int expand_downwards(struct vm_area_struct *vma,
  * check_stack_guard_page()), which only allows the guard page to be
  * removed under these circumstances.
  */
+
+//VMT: THE expand_stack RECORDINGS ARE UP IN expand_upward AND expand_downward
+
 #ifdef CONFIG_STACK_GROWSUP
 int expand_stack(struct vm_area_struct *vma, unsigned long address)
 {
@@ -2425,6 +2477,7 @@ int split_vma(struct mm_struct *mm, struct vm_area_struct *vma,
 int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 {
 	unsigned long end;
+	int do_not_log = start & VMT_DO_NOT_LOG;
 	struct vm_area_struct *vma, *prev, *last;
 
 	if ((start & ~PAGE_MASK) || start > TASK_SIZE || len > TASK_SIZE-start)
@@ -2500,6 +2553,15 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 
 	/* Fix up all other VM information */
 	remove_vma_list(mm, vma);
+
+//VMT: I THINK HERE BECASUE THE OLD VERSION TOO (do_munmap IN mm/mmap.c) HAS IT JUST BEFORE THE RETURN. I INVENTED THE do_not_long USING VARIABLES THAT CORRESPOND TO THOSE FORMING THE do_not_log IN THE OLD VERSION. 
+	if (!do_not_log) {
+		kernel_event.tag = TAG_MUNMAP;
+		kernel_event.pid = current->pid;
+		kernel_event.address = addr;
+		kernel_event.length = len;
+		emit_kernel_record(&kernel_event);
+	}
 
 	return 0;
 }
@@ -2620,11 +2682,25 @@ static unsigned long do_brk(unsigned long addr, unsigned long len)
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 out:
 	perf_event_mmap(vma);
+//VMT: Emit that an anonymous mapping was created. SIMILAR TO THE do_brk FUNCTION IN OLD CODE mm/mmap.c. RECORD IN OUT BEFORE mm->total_vm IS ADDED ONTO. 
+	kernel_event.tag = TAG_MMAP_ANONYMOUS;
+	kernel_event.pid = current->pid;
+	kernel_event.address = addr;
+	kernel_event.length = len;
+	emit_kernel_record(&kernel_event);
+
 	mm->total_vm += len >> PAGE_SHIFT;
 	if (flags & VM_LOCKED) {
 		if (!mlock_vma_pages_range(vma, addr, addr + len))
 			mm->locked_vm += (len >> PAGE_SHIFT);
 	}
+
+	/*
+	 * VMT: Walk the page table for the region just mapped,
+	 * kernel-disabling any present PTEs.
+	 */
+	kernel_disable_page_range(vma, addr, addr + len);
+
 	return addr;
 }
 
@@ -2685,6 +2761,12 @@ void exit_mmap(struct mm_struct *mm)
 		vma = remove_vma(vma);
 	}
 	vm_unacct_memory(nr_accounted);
+
+//VMT: HERE BECAUSE IT'S AFTER THE vma LOOP, JUST LIKE THE mpnt LOOP (vma HERE CORRESPONDS TO THE OLD mpnt) IN FUNCTION exit_mmap IN mm/mmap.c
+	
+	kernel_event.tag = TAG_COMPLETE_UNMAP;
+	kernel_event.context = (context_ID_t)mm->pgd >> PAGE_SHIFT;
+	emit_kernel_record(&kernel_event);
 
 	WARN_ON(mm->nr_ptes > (FIRST_USER_ADDRESS+PMD_SIZE-1)>>PMD_SHIFT);
 }

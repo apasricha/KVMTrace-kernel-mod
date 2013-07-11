@@ -1603,6 +1603,20 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 	if (!newsock)
 		goto out_put;
 
+//VMT: LIKE IN OLD CODE FUNCTION sys_accept IN net/socket.c, RECORD BETWEEN if(!newsock) AND newsock->type ASSIGNMENT
+	/*
+	 * VMT: Emit that accept() was called.  Note that we choose
+	 * not to emit whether or not the real kernel blocks the
+	 * caller in response to this call.  (1) For current purposes,
+	 * we simply want to know that this is a moment at which a
+	 * process _could_ block.  (2) It's not at all clear, in this
+	 * function, where a process is put to sleep in response to
+	 * this call.
+	 */
+	kernel_event.tag = TAG_ACCEPT;
+	kernel_event.pid = current->pid;
+	emit_kernel_record(&kernel_event);
+
 	newsock->type = sock->type;
 	newsock->ops = sock->ops;
 

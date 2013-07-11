@@ -187,6 +187,12 @@ static void shm_open(struct vm_area_struct *vma)
  */
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 {
+//AS IN OLD FUNCTION shm_destroy IN ipc/shm.c, HERE TOO RECORDING IS DONE FIRST THING IN THE FUNCTION, AND BEFORE shm_tot IS CHANGED
+	kernel_event.tag = TAG_SHM_DESTROY;
+	kernel_event.pid = current->pid;
+	kernel_event.shm = shp->id;
+	emit_kernel_record(&kernel_event);	
+
 	ns->shm_tot -= (shp->shm_segsz + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	shm_rmid(ns, shp);
 	shm_unlock(shp);
@@ -1079,8 +1085,23 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr,
 	err = 0;
 	if (IS_ERR_VALUE(user_addr))
 		err = (long)user_addr;
+
 invalid:
 	up_write(&current->mm->mmap_sem);
+//VMT: INVENTED THIS IF SO THAT IT'LL BE JUST LIKE IN THE OLD VERSION (FUNCTION sys_shmat IN ipc/shm.c) IN THE ELSE OF IS_ERR_VALUE(user_addr), IN CASE invalid AND AFTER up_write
+	if (!IS_ERR_VALUE(user_addr)) {
+		/*
+		 * VMT: Emit the shared attachment if the mapping was
+		 * successful.
+		 */
+		kernel_event.tag = TAG_SHMAT;
+		kernel_event.pid = current->pid;
+		kernel_event.address = (virtual_address_t)user_addr;
+		kernel_event.length = size;
+		kernel_event.shm = shp->id;
+		emit_kernel_record(&kernel_event);
+	}
+
 
 out_fput:
 	fput(file);
