@@ -607,3 +607,5 @@ gathering.  The latter will now be separately implemented in a substrate
 The sole purpose of this code is to record relevant kernel events for
 later post-processing.
 ========================================================================
+
+Trying to make additions to QEMU failed. We tried to make an unprotected queue to protect faulty pages once they had passed through. Any future reference would trigger a fault, so we could determine whether our code caused it and record such pages. The problem arises that is unlikely that our attemps to mprotect pages, based on guest memory addresses would actually protect the correct pages in QEMU's 'physical' (the QEMU memory). It seesm that it is hard for one to know the actual memory locations to mprotect based on just the guest mem address. We will now use QEMU in its original form and leave the mprotect to kVM.  
