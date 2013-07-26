@@ -6,7 +6,7 @@
  * file.
  *
  * kVMTrace-modified file
- */
+ **/
 
 
 
@@ -54,13 +54,26 @@ const char hex_table [] = {'0', '1', '2', '3', '4', '5', '6', '7',
 			   '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
 
 /* The kernel trace's file pointer. */
-struct file* kernel_trace_filp = NULL;
+struct file* kt_filp = NULL;
 
 /*
- * The length of the text buffer into which the kernel record is
- * composed.
+ * The kernel trace's construction buffer.  New records are assembled
+ * into this space; when it is nearly full, the kvmtraced thread
+ * flushes it.
  */
-#define RECORD_BUFFER_SIZE 128
+const char* kt_buffer = NULL;
+
+/* The current index into the kernel trace buffer. */
+int kt_i = 0;
+
+/* The size of the kernel trace buffer. */
+#define KT_BUFFER_SIZE (64 * 1024) // 64 KB * 1024 B/KB
+
+/*
+ * The maximum size of a kernel trace record (calculated, but not with
+ * particular care, so a bit of conservative padding included.)
+ */
+#define KT_MAX_RECORD_SIZE 256 // B
 /* ================================================================== */
 
 
@@ -93,7 +106,8 @@ static void
 int_to_string (char* buffer,
 	       int* buffer_index,
 	       unsigned char* value,
-	       unsigned int value_size) {
+	       unsigned int value_size)
+{
 
 	/*
 	 * Loop through the bytes of the value.  Assume (for
@@ -157,7 +171,8 @@ int_to_string (char* buffer,
 void
 string_to_string (char* buffer,
 		  int* buffer_index,
-		  char* source) {
+		  char* source)
+{
 
 	/*
 	 * Loop through the bytes of the source string until a null
@@ -182,19 +197,20 @@ string_to_string (char* buffer,
  *       <http://stackoverflow.com/questions/1184274/how-to-read-write-files-within-a-linux-kernel-module>
  */
 void
-open_kernel_trace (void) {
+open_kernel_trace (void)
+{
 
     mm_segment_t oldfs;
     int err = 0;
 
     oldfs = get_fs();
     set_fs(get_ds());
-    kernel_trace_filp = filp_open("/tmp/kvmtrace.kt",
+    kt_filp = filp_open("/tmp/kvmtrace.kt",
 				  O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE,
 				  S_IRUSR | S_IWUSR);
     set_fs(oldfs);
-    if(IS_ERR(kernel_trace_filp)) {
-        err = PTR_ERR(kernel_trace_filp);
+    if(IS_ERR(kt_filp)) {
+        err = PTR_ERR(kt_filp);
 	printk(KERN_ERR "kvmtraced(): Failed to open kernel trace");
     }
 
@@ -205,9 +221,10 @@ open_kernel_trace (void) {
 
 /* ================================================================== */
 void
-close_kernel_trace (void) {
+close_kernel_trace (void)
+{
 
-    filp_close(kernel_trace_filp, NULL);
+    filp_close(kt_filp, NULL);
 
 }
 /* ================================================================== */
@@ -215,37 +232,66 @@ close_kernel_trace (void) {
 
 
 /* ================================================================== */
-void 
-emit_kernel_record (kernel_event_s* kernel_event) {
+/**
+ * Write the buffered kernel events to the kernel trace immediately.
+ **/
+
+void
+flush_kernel_trace ()
+{
 
     mm_segment_t old_fs;
     int ret;
     loff_t pos;
 
-    timestamp_t cycle_timestamp;
-    timestamp_t reference_timestamp;
-    char content[RECORD_BUFFER_SIZE];
-    int index = 0;
-    cputime_t user_time;
-    cputime_t system_time;
-
     /*
-     * If this is the first call to emit a record, then open the
-     * output file.  If the open fails, return without emitting, since
-     * the system may not yet be ready to open the trace file.  [SFHK:
-     * Later, this function should only buffer the event so that no
-     * output to the trace file is lost to early events that precede
-     * file system mounting.]
+     * If this is the first call to flush the buffer, then open the
+     * output file.  If the open fails, return without flushing, since
+     * the system may not yet be ready to open the trace file.
      */
-    if (kernel_trace_filp == NULL) {
+    if (kt_filp == NULL) {
 	    open_kernel_trace();
-	    if (IS_ERR(kernel_trace_filp)) {
+	    if (IS_ERR(kt_filp)) {
 		    printk(KERN_NOTICE "kvmtraced: Failed open, skipping emit.\n");
-		    kernel_trace_filp = NULL;
+		    kt_filp = NULL;
 		    return;
 	    }
     }
-    pos = kernel_trace_filp->f_pos;
+    pos = kt_filp->f_pos;
+
+    /* Lock the buffer, flush it, and then unlock it. */
+    old_fs = get_fs();
+    set_fs(get_ds());
+
+    ret = vfs_write(kt_filp, kt_buffer, kt_i, &pos);
+    if (ret != 0) {
+	    printk(KERN_ERR "kvmtraced(): Failed emit_kernel_trace()");
+    }
+
+    set_fs(old_fs);
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+/**
+ * This function is not well named.  It does not directly emit a
+ * record, but rather constructs and buffers it for later.  From the
+ * caller's viewpoint, however, it is the function for adding a kernel
+ * event to the log of them; the buffered events are later flushed to
+ * the kernel trace file by the kvmtraced helper thread.
+ **/
+
+void 
+emit_kernel_record (kernel_event_s* kernel_event)
+{
+
+    timestamp_t cycle_timestamp;
+    timestamp_t reference_timestamp;
+    cputime_t user_time;
+    cputime_t system_time;
 
     /*
      * Construct the record by placing the fields into the buffer one
@@ -255,18 +301,18 @@ emit_kernel_record (kernel_event_s* kernel_event) {
      * performed by this task).
      */
     rdtscll(cycle_timestamp);
-    content[index++] = kernel_event->tag;
-    content[index++] = ' ';
-    int_to_string(content,
-		  &index,
+    kt_buffer[kt_i++] = kernel_event->tag;
+    kt_buffer[kt_i++] = ' ';
+    int_to_string(kt_buffer,
+		  &kt_i,
 		  (unsigned char*)&cycle_timestamp,
 		  sizeof(cycle_timestamp));
-    content[index++] = ' ';
+    kt_buffer[kt_i++] = ' ';
     task_cputime_adjusted(current, &user_time, &system_time);
     reference_timestamp = ((timestamp_t)user_time *
 			   (timestamp_t)references_per_jiffy);
-    int_to_string(content,
-		  &index,
+    int_to_string(kt_buffer,
+		  &kt_i,
 		  (unsigned char*)&reference_timestamp,
 		  sizeof(reference_timestamp));
 
@@ -281,32 +327,32 @@ emit_kernel_record (kernel_event_s* kernel_event) {
      * Depending on the type of kernel event, complete the *
      * formatting of the record.
      */
-    content[index++] = ' ';
+    kt_buffer[kt_i++] = ' ';
     switch (kernel_event->tag) {
 
     case TAG_SCHEDULE:
     case TAG_ACCEPT:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
 	    break;
 
     case TAG_EXIT: {
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&user_time,
 			  sizeof(user_time));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&system_time,
 			  sizeof(system_time));
 	    break;
@@ -315,283 +361,283 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 
     case TAG_FORK:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->parent_pid),
 			  sizeof(kernel_event->parent_pid));
 	    break;
 
     case TAG_EXEC:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
-	    content[index++] = ' ';
-	    string_to_string(content,
-			     &index,
+	    kt_buffer[kt_i++] = ' ';
+	    string_to_string(kt_buffer,
+			     &kt_i,
 			     kernel_event->filename);
 
 	    break;
 
     case TAG_CONTEXT_ASSIGNMENT:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->context),
 			  sizeof(kernel_event->context));
 	    break;
 
     case TAG_DUPLICATE_RANGE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->context),
 			  sizeof(kernel_event->context));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->duplicate_context),
 			  sizeof(kernel_event->duplicate_context));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->end_address),
 			  sizeof(kernel_event->end_address));
 	    break;
 
     case TAG_MMAP_FILE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->file_offset),
 			  sizeof(kernel_event->file_offset));
-	    content[index++] = ' ';
-	    content[index++] = kernel_event->file_type;
-	    content[index++] = ' ';
-	    string_to_string(content,
-			     &index,
+	    kt_buffer[kt_i++] = ' ';
+	    kt_buffer[kt_i++] = kernel_event->file_type;
+	    kt_buffer[kt_i++] = ' ';
+	    string_to_string(kt_buffer,
+			     &kt_i,
 			     kernel_event->filename);
 	    break;
 
     case TAG_MREMAP:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->old_address),
 			  sizeof(kernel_event->old_address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->old_length),
 			  sizeof(kernel_event->old_length));
-	    content[index++] = ' ';
+	    kt_buffer[kt_i++] = ' ';
 	    break;
 
     case TAG_MMAP_ANONYMOUS:
     case TAG_MUNMAP:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
 	    break;
 
     case TAG_COMPLETE_UNMAP:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->context),
 			  sizeof(kernel_event->context));
 	    break;
 
     case TAG_SHMAT:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->shm),
 			  sizeof(kernel_event->shm));
 	    break;
 
     case TAG_SHM_DESTROY:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->shm),
 			  sizeof(kernel_event->shm));
 	    break;
 
     case TAG_COW_UNMAP:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
 	    break;
 
     case TAG_FILE_OPEN:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->file_offset),
 			  sizeof(kernel_event->file_offset));
-	    content[index++] = ' ';
-	    content[index++] = kernel_event->file_type;
-	    content[index++] = ' ';
-	    string_to_string(content,
-			     &index,
+	    kt_buffer[kt_i++] = ' ';
+	    kt_buffer[kt_i++] = kernel_event->file_type;
+	    kt_buffer[kt_i++] = ' ';
+	    string_to_string(kt_buffer,
+			     &kt_i,
 			     kernel_event->filename);
 	    break;
 
     case TAG_FILE_CLOSE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
 	    break;
@@ -599,97 +645,97 @@ emit_kernel_record (kernel_event_s* kernel_event) {
     case TAG_FILE_READ:
     case TAG_FILE_WRITE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->file_offset),
 			  sizeof(kernel_event->file_offset));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
 	    break;
 
     case TAG_FILE_DELETE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
 	    break;
 
     case TAG_FILE_TRUNCATE:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->inode),
 			  sizeof(kernel_event->inode));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->major_device),
 			  sizeof(kernel_event->major_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->minor_device),
 			  sizeof(kernel_event->minor_device));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->file_offset),
 			  sizeof(kernel_event->file_offset));
 	    break;
 
     case TAG_DEBUG:
 
-	    int_to_string(content,
-			  &index,
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->pid),
 			  sizeof(kernel_event->pid));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->address),
 			  sizeof(kernel_event->address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->end_address),
 			  sizeof(kernel_event->end_address));
-	    content[index++] = ' ';
-	    int_to_string(content,
-			  &index,
+	    kt_buffer[kt_i++] = ' ';
+	    int_to_string(kt_buffer,
+			  &kt_i,
 			  (unsigned char*)&(kernel_event->length),
 			  sizeof(kernel_event->length));
 	    break;
@@ -704,22 +750,15 @@ emit_kernel_record (kernel_event_s* kernel_event) {
     }
 
     /* Complete the record with a newline character. */
-    content[index++] = '\n';
+    kt_buffer[kt_i++] = '\n';
 
     /*
-     * For now, write the record immediately.  Later, a buffer that,
-     * when full enough, is flushed by periodic scheduling of
-     * kvmtraced.
+     * If the buffer is more than half full, then wake up the
+     * kvmtraced thread.
      */
-    old_fs = get_fs();
-    set_fs(get_ds());
-
-    ret = vfs_write(kernel_trace_filp, content, index, &pos);
-    if (ret != 0) {
-	    printk(KERN_ERR "kvmtraced(): Failed emit_kernel_trace()");
+    if (kt_i >= KT_BUFFER_SIZE / 2) {
+	    schedule_kvmtraced();
     }
-
-    set_fs(old_fs);
 
 }
 /* ================================================================== */
@@ -728,9 +767,10 @@ emit_kernel_record (kernel_event_s* kernel_event) {
 
 /* ================================================================== */
 void
-sync_kernel_trace (void) {
+sync_kernel_trace (void)
+{
 
-    vfs_fsync(kernel_trace_filp, 0);
+    vfs_fsync(kt_filp, 0);
 
 }
 /* ================================================================== */
@@ -741,7 +781,8 @@ sync_kernel_trace (void) {
 /* Schedule kvmtraced if possible. */
 
 static void
-schedule_kvmtraced (void) {
+schedule_kvmtraced (void)
+{
 
 	if (kvmtraced_thread != NULL) {
 		wake_up_process(kvmtraced_thread);
@@ -755,22 +796,31 @@ schedule_kvmtraced (void) {
 /* ================================================================== */
 /*
  * The entry point for the kvmtraced kernel thread.
- *
  * Set the thread to flush its buffer periodically.
  */
 
 int
-kvmtraced (void* unused) {
+kvmtraced (void* unused)
+{
 
-	/* Forever flush the buffer. */
+	/*
+	 * Forever check the buffer for flushing (and do so, if
+	 * needed).
+	 */
 	while (1) {
 
-		/* A fake record. */
-		kernel_event.tag = TAG_SCHEDULE;
-		kernel_event.pid = 0x123;
-		emit_kernel_record(&kernel_event);
+		/*
+		 * If the buffer is sufficiently full, then flush
+		 * it.
+		 */
+		if (kt_i + KT_MAX_RECORD_SIZE >= KT_BUFFER_SIZE) {
+			flush_kernel_trace();
+		}
 
-		printk(KERN_NOTICE "kvmtraced: Emit attempted, sleeping...\n");
+		/*
+		 * Go to sleep.  Time or the emit_kernel_trace() code
+		 * may wake up the thread to attempt the next flush.
+		 */
 		__set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(10 * HZ);
 
@@ -791,7 +841,8 @@ kvmtraced (void* unused) {
  * block on that I/O.
  */
 
-static int __init kvmtraced_init (void) {
+static int __init kvmtraced_init (void)
+{
 
 	int err = 0;
 
