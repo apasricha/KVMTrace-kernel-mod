@@ -1079,6 +1079,9 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr,
 		    addr > current->mm->start_stack - size - PAGE_SIZE * 5)
 			goto invalid;
 	}
+
+	/* VMT: Mark this as a Sys V IPC shmop to avoid double recording. */
+	flags |= MAP_SHMOP;
 		
 	user_addr = do_mmap_pgoff(file, addr, size, prot, flags, 0);
 	*raddr = user_addr;
