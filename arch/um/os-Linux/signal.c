@@ -15,7 +15,7 @@
 #include <sysdep/mcontext.h>
 #include "internal.h"
 
-void (*sig_info[NSIG])(int, siginfo_t *, struct uml_pt_regs *) = {
+void (*sig_info[NSIG])(int, struct siginfo *, struct uml_pt_regs *) = {
 	[SIGTRAP]	= relay_signal,
 	[SIGFPE]	= relay_signal,
 	[SIGILL]	= relay_signal,
@@ -25,7 +25,7 @@ void (*sig_info[NSIG])(int, siginfo_t *, struct uml_pt_regs *) = {
 	[SIGIO]		= sigio_handler,
 	[SIGVTALRM]	= timer_handler };
 
-static void sig_handler_common(int sig, siginfo_t *si, mcontext_t *mc)
+static void sig_handler_common(int sig, struct siginfo *si, mcontext_t *mc)
 {
 	struct uml_pt_regs r;
 	int save_errno = errno;
@@ -61,7 +61,7 @@ static void sig_handler_common(int sig, siginfo_t *si, mcontext_t *mc)
 static int signals_enabled;
 static unsigned int signals_pending;
 
-void sig_handler(int sig, siginfo_t *si, mcontext_t *mc)
+void sig_handler(int sig, struct siginfo *si, mcontext_t *mc)
 {
 	int enabled;
 
@@ -120,7 +120,7 @@ void set_sigstack(void *sig_stack, int size)
 		panic("enabling signal stack failed, errno = %d\n", errno);
 }
 
-static void (*handlers[_NSIG])(int sig, siginfo_t *si, mcontext_t *mc) = {
+static void (*handlers[_NSIG])(int sig, struct siginfo *si, mcontext_t *mc) = {
 	[SIGSEGV] = sig_handler,
 	[SIGBUS] = sig_handler,
 	[SIGILL] = sig_handler,
@@ -133,7 +133,7 @@ static void (*handlers[_NSIG])(int sig, siginfo_t *si, mcontext_t *mc) = {
 };
 
 
-static void hard_handler(int sig, siginfo_t *si, void *p)
+static void hard_handler(int sig, struct siginfo *si, void *p)
 {
 	struct ucontext *uc = p;
 	mcontext_t *mc = &uc->uc_mcontext;
