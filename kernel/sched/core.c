@@ -89,6 +89,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 void start_bandwidth_timer(struct hrtimer *period_timer, ktime_t period)
 {
 	unsigned long delta;

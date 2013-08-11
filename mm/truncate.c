@@ -22,6 +22,9 @@
 #include <linux/cleancache.h>
 #include "internal.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 
 /**
  * do_invalidatepage - invalidate part or all of a page
@@ -297,8 +300,7 @@ void truncate_inode_pages_range(struct address_space *mapping,
 	inode = mapping->host;
 	kernel_event.tag = TAG_FILE_TRUNCATE;
 	kernel_event.inode = inode->i_ino;
-	kernel_event.major_device = MAJOR(inode->i_devices);
-	kernel_event.minor_device = MINOR(inode->i_devices);
+	kernel_event.device_ID = inode->i_rdev;
 	kernel_event.file_offset = (file_offset_t)start;
 	emit_kernel_record(&kernel_event);
 

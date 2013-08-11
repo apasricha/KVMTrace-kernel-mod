@@ -40,6 +40,9 @@
 
 #include "internal.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
 #endif
@@ -1541,8 +1544,7 @@ out:
 			struct inode* inode = file->f_dentry->d_inode;
 			kernel_event.tag = TAG_MMAP_FILE;
 			kernel_event.inode = inode->i_ino;
-			kernel_event.major_device = MAJOR(inode->i_devices);
-			kernel_event.minor_device = MINOR(inode->i_devices);
+			kernel_event.device_ID = inode->i_rdev;
 			kernel_event.file_offset = (file_offset_t)pgoff;
 			kernel_event.file_type =
 				determine_file_type(inode->i_mode);
@@ -2558,7 +2560,7 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 	if (!do_not_log) {
 		kernel_event.tag = TAG_MUNMAP;
 		kernel_event.pid = current->pid;
-		kernel_event.address = addr;
+		kernel_event.address = start;
 		kernel_event.length = len;
 		emit_kernel_record(&kernel_event);
 	}
@@ -2698,8 +2700,10 @@ out:
 	/*
 	 * VMT: Walk the page table for the region just mapped,
 	 * kernel-disabling any present PTEs.
+	 *
+	 * SFHK: Not yet.  Get kernel events logged first.
 	 */
-	kernel_disable_page_range(vma, addr, addr + len);
+	// kernel_disable_page_range(vma, addr, addr + len);
 
 	return addr;
 }

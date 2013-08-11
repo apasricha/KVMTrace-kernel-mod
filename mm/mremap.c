@@ -26,6 +26,9 @@
 
 #include "internal.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 static pmd_t *get_old_pmd(struct mm_struct *mm, unsigned long addr)
 {
 	pgd_t *pgd;
@@ -529,7 +532,6 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			ret = addr;
 
 //VMT: FOUND IT HERE, USING "We need to grow", AND THEN FOLLOWING DOWN JUST LIKE IT IS IN OLD CODE do_mremap IN mm/mremap.c. RECORD BETWEEN ret = addr AND goto out
-//NOTE: i_dev from the old version appears to be i_devices here. 
 			kernel_event.pid = current->pid;
 			kernel_event.address = addr + old_len;
 			kernel_event.length = new_len - old_len;
@@ -537,10 +539,8 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 				kernel_event.tag = TAG_MMAP_FILE;
 				kernel_event.inode =
 					vma->vm_file->f_dentry->d_inode->i_ino;
-				kernel_event.major_device =
-					MAJOR(vma->vm_file->f_dentry->d_inode->i_devices);
-				kernel_event.minor_device =
-					MINOR(vma->vm_file->f_dentry->d_inode->i_devices);
+				kernel_event.device_ID =
+					vma->vm_file->f_dentry->d_inode->i_rdev;
 				kernel_event.file_offset =
 					(file_offset_t)(vma->vm_pgoff +
 							(old_len << PAGE_SHIFT));
@@ -555,10 +555,12 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 			/*
 			 * VMT: Kernel-disable any present PTEs
 			 * created by the above operations.
+			 *
+			 * SFHK: Not yet.
 			 */
-			kernel_disable_page_range(vma,
-						  addr + old_len,
-						  addr + (new_len - old_len));
+			// kernel_disable_page_range(vma,
+			//			  addr + old_len,
+			//			  addr + (new_len - old_len));
 
 			goto out;
 		}
@@ -588,9 +590,11 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 		/*
 		 * VMT: Disable any new mappings and then log the move
 		 * of the region, but only if the remapping succeeded.
+		 *
+		 * SFHK: Not yet on page disabling; just log the kernel event.
 		 */
-		vma = find_vma(current->mm, ret);
-		kernel_disable_page_range(vma, ret, ret + new_len);
+		// vma = find_vma(current->mm, ret);
+		// kernel_disable_page_range(vma, ret, ret + new_len);
 		kernel_event.pid = current->pid;
 		kernel_event.address = ret;
 		kernel_event.length = new_len;

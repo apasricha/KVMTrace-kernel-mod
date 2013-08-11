@@ -20,6 +20,9 @@
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
 	.read		= do_sync_read,
@@ -449,8 +452,7 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 			kernel_event.tag = TAG_FILE_WRITE;
 			kernel_event.pid = current->pid;
 			kernel_event.inode = inode->i_ino;
-			kernel_event.major_device = MAJOR(inode->i_dev);
-			kernel_event.minor_device = MINOR(inode->i_dev);
+			kernel_event.device_ID = inode->i_rdev;
 			kernel_event.file_offset = (file_offset_t)file->f_pos;
 			kernel_event.length = (offset_t)ret;
 			emit_kernel_record(&kernel_event);
@@ -765,8 +767,7 @@ static ssize_t do_readv_writev(int type, struct file *file,
 		kernel_event.tag = TAG_FILE_READ;
 		kernel_event.pid = current->pid;
 		kernel_event.inode = inode->i_ino;
-		kernel_event.major_device = MAJOR(inode->i_devices);
-		kernel_event.minor_device = MINOR(inode->i_devices);
+		kernel_event.device_ID = inode->i_rdev;
 		kernel_event.file_offset = (file_offset_t)file->f_pos;
 		kernel_event.length = ret;
 		emit_kernel_record(&kernel_event);
@@ -779,8 +780,7 @@ static ssize_t do_readv_writev(int type, struct file *file,
 		kernel_event.tag = TAG_FILE_WRITE;
 		kernel_event.pid = current->pid;
 		kernel_event.inode = inode->i_ino;
-		kernel_event.major_device = MAJOR(inode->i_devices);
-		kernel_event.minor_device = MINOR(inode->i_devices);
+		kernel_event.device_ID = inode->i_rdev;
 		kernel_event.file_offset = (file_offset_t)file->f_pos;
 		kernel_event.length = ret;
 		emit_kernel_record(&kernel_event);

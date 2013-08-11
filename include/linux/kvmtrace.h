@@ -22,7 +22,7 @@ typedef kvmt_word_size_t page_number_t;
 /* Types used within the structure. */
 typedef char tag_t;
 typedef kvmt_word_size_t virtual_address_t;
-typedef uint32_t context_ID_t;
+typedef kvmt_word_size_t context_ID_t;
 typedef uint16_t process_ID_t;
 typedef uint32_t inode_ID_t;
 typedef uint32_t device_ID_t;
@@ -51,8 +51,7 @@ typedef struct kernel_event_struct {
 	offset_t length;
 	offset_t old_length;
 	inode_ID_t inode;
-	device_ID_t major_device;
-	device_ID_t minor_device;
+	device_ID_t device_ID;
 	file_offset_t file_offset;
 	file_type_t file_type;
 	shm_ID_t shm;
@@ -65,6 +64,12 @@ typedef struct kernel_event_struct {
  * but is declared in kernel/kvmtrace.c.
  */
 extern kernel_event_s kernel_event;
+
+/*
+ * Given the mode bits from an inode, return a value that indicates
+ * just the file type (file, pipe, device, or socket).
+ */
+file_type_t determine_file_type (umode_t mode);
 
 /*
  * Functions that emit kernel events to the appropriate trace.

@@ -66,6 +66,9 @@
 
 #include <trace/events/sched.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
@@ -728,8 +731,8 @@ int setup_arg_pages(struct linux_binprm *bprm,
 //VMT: Emit a record of an anonymous kernel mapping. DIDN'T KNOW WHERE ELSE TO PUT IT, SO I JUST USED THE SAME FUNCTION AS IN OLD, setup_arg_pages, in fs/exec.c 
 	kernel_event.tag = TAG_MMAP_ANONYMOUS;
 	kernel_event.pid = current->pid;
-	kernel_event.address = mpnt->vm_start;
-	kernel_event.length = mpnt->vm_end - mpnt->vm_start;
+	kernel_event.address = vma->vm_start;
+	kernel_event.length = vma->vm_end - vma->vm_start;
 	emit_kernel_record(&kernel_event);
 
 #ifdef CONFIG_STACK_GROWSUP
@@ -1462,8 +1465,8 @@ EXPORT_SYMBOL(search_binary_handler);
  * sys_execve() executes a new program.
  */
 static int do_execve_common(const char *filename,
-				struct user_arg_ptr argv,
-				struct user_arg_ptr envp)
+			    struct user_arg_ptr argv,
+			    struct user_arg_ptr envp)
 {
 	struct linux_binprm *bprm;
 	struct file *file;
@@ -1471,6 +1474,7 @@ static int do_execve_common(const char *filename,
 	bool clear_in_exec;
 	int retval;
 	const struct cred *cred = current_cred();
+	struct inode* inode; /* VMT */
 
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
@@ -1558,27 +1562,17 @@ static int do_execve_common(const char *filename,
 	free_bprm(bprm);
 
 //VMT: THIS RECORDING FOLLOWS FROM THE OLD CODE FUNCTION do_execve IN fs/exec.c. AS SEEN, IT SHOULD OCCUR BETWEEN execve success AND out CASE.  
-		struct nameidata nd;
-		int err;
-		struct inode* inode;
+	inode = file->f_mapping->host;
+	BUG_ON(inode == NULL);
 
-		BUG_ON(file == NULL);
-		err = path_lookup(filename,
-				  LOOKUP_FOLLOW | LOOKUP_POSITIVE,
-				  &nd);
-		BUG_ON(err);
-		inode = nd.dentry->d_inode;
-		BUG_ON(inode == NULL);
-
-		kernel_event.tag = TAG_EXEC;
-		kernel_event.pid = current->pid;
-		kernel_event.inode = inode->i_ino;
-		kernel_event.major_device = MAJOR(inode->i_devices);
-		kernel_event.minor_device = MINOR(inode->i_devices);
-		strncpy(kernel_event.filename,
-			filename,
-			filename_buffer_size);
-		emit_kernel_record(&kernel_event);
+	kernel_event.tag = TAG_EXEC;
+	kernel_event.pid = current->pid;
+	kernel_event.inode = inode->i_ino;
+	kernel_event.device_ID = inode->i_rdev;
+	strncpy(kernel_event.filename,
+		filename,
+		filename_buffer_size);
+	emit_kernel_record(&kernel_event);
 
 	if (displaced)
 		put_files_struct(displaced);

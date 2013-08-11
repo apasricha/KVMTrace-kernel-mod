@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <strings.h>
 #include <as-layout.h>
+#include <bits/siginfo.h>
 #include <kern_util.h>
 #include <os.h>
 #include <sysdep/mcontext.h>

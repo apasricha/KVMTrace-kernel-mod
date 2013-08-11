@@ -69,6 +69,9 @@
 
 #include "internal.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 #ifndef CONFIG_NEED_MULTIPLE_NODES
 /* use the per-pgdat data instead for discontigmem - mbligh */
 unsigned long max_mapnr;
@@ -1079,16 +1082,17 @@ int copy_page_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 
 	ret = 0;
 
+	dst_pgd = pgd_offset(dst_mm, addr);
+	src_pgd = pgd_offset(src_mm, addr);
+
 //VMT: AFTER cow (here is_cow) IS ASSIGNED A VALUE AND BEFORE dst_pgd IS, FOLLOWING FROM THE OLD CODE IN FUNCTION copy_page_range IN mm/memory.c
 	kernel_event.tag = TAG_DUPLICATE_RANGE;
-	kernel_event.context = (context_ID_t)src->pgd >> PAGE_SHIFT;
-	kernel_event.duplicate_context = (context_ID_t)dst->pgd >> PAGE_SHIFT;
+	kernel_event.context = (context_ID_t)src_pgd >> PAGE_SHIFT;
+	kernel_event.duplicate_context = (context_ID_t)dst_pgd >> PAGE_SHIFT;
 	kernel_event.address = addr;
 	kernel_event.end_address = end;
 	emit_kernel_record(&kernel_event);
 
-	dst_pgd = pgd_offset(dst_mm, addr);
-	src_pgd = pgd_offset(src_mm, addr);
 	do {
 		next = pgd_addr_end(addr, end);
 		if (pgd_none_or_clear_bad(src_pgd))

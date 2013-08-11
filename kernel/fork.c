@@ -83,6 +83,9 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/task.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 /*
  * Protected counters by write_lock_irq(&tasklist_lock)
  */

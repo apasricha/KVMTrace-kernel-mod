@@ -23,7 +23,6 @@
 #include <linux/kthread.h>
 #include <linux/kvmtrace.h>
 #include <linux/syscalls.h>
-#include <stdint.h>
 /* ================================================================== */
 
 
@@ -61,7 +60,7 @@ struct file* kt_filp = NULL;
  * into this space; when it is nearly full, the kvmtraced thread
  * flushes it.
  */
-const char* kt_buffer = NULL;
+char* const kt_buffer = NULL;
 
 /* The current index into the kernel trace buffer. */
 int kt_i = 0;
@@ -237,7 +236,7 @@ close_kernel_trace (void)
  **/
 
 void
-flush_kernel_trace ()
+flush_kernel_trace (void)
 {
 
     mm_segment_t old_fs;
@@ -269,6 +268,50 @@ flush_kernel_trace ()
     }
 
     set_fs(old_fs);
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+/* Schedule kvmtraced if possible. */
+
+static void
+schedule_kvmtraced (void)
+{
+
+	if (kvmtraced_thread != NULL) {
+		wake_up_process(kvmtraced_thread);
+	}
+
+}
+/* ================================================================== */
+
+
+
+/* ================================================================== */
+/*
+ * Given the mode bits from an inode, return a value that indicates
+ * just the file type (file, pipe, device, or socket).
+ */
+
+file_type_t determine_file_type (umode_t mode) {
+
+	file_type_t file_type = '\0';
+
+	if (S_ISLNK(mode) || S_ISREG(mode) || S_ISDIR(mode)) {
+		file_type = FILE_TYPE_REGULAR;
+	} else if (S_ISCHR(mode) || S_ISBLK(mode)) {
+		file_type = FILE_TYPE_DEVICE;
+	} else if (S_ISFIFO(mode)) {
+		file_type = FILE_TYPE_PIPE;
+	} else if (S_ISSOCK(mode)) {
+		file_type = FILE_TYPE_SOCKET;
+	}
+
+	BUG_ON(file_type == '\0');
+	return file_type;
 
 }
 /* ================================================================== */
@@ -386,13 +429,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    kt_buffer[kt_i++] = ' ';
 	    string_to_string(kt_buffer,
 			     &kt_i,
@@ -460,13 +498,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
@@ -599,13 +632,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
@@ -633,13 +661,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    break;
 
     case TAG_FILE_READ:
@@ -657,13 +680,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
@@ -685,13 +703,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    break;
 
     case TAG_FILE_TRUNCATE:
@@ -703,13 +716,8 @@ emit_kernel_record (kernel_event_s* kernel_event)
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
-			  (unsigned char*)&(kernel_event->major_device),
-			  sizeof(kernel_event->major_device));
-	    kt_buffer[kt_i++] = ' ';
-	    int_to_string(kt_buffer,
-			  &kt_i,
-			  (unsigned char*)&(kernel_event->minor_device),
-			  sizeof(kernel_event->minor_device));
+			  (unsigned char*)&(kernel_event->device_ID),
+			  sizeof(kernel_event->device_ID));
 	    kt_buffer[kt_i++] = ' ';
 	    int_to_string(kt_buffer,
 			  &kt_i,
@@ -771,22 +779,6 @@ sync_kernel_trace (void)
 {
 
     vfs_fsync(kt_filp, 0);
-
-}
-/* ================================================================== */
-
-
-
-/* ================================================================== */
-/* Schedule kvmtraced if possible. */
-
-static void
-schedule_kvmtraced (void)
-{
-
-	if (kvmtraced_thread != NULL) {
-		wake_up_process(kvmtraced_thread);
-	}
 
 }
 /* ================================================================== */

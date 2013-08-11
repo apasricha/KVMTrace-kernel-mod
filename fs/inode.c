@@ -19,6 +19,9 @@
 #include <linux/ratelimit.h>
 #include "internal.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 /*
  * Inode locking rules:
  *
