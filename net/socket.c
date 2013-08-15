@@ -106,6 +106,9 @@
 #include <linux/sockios.h>
 #include <linux/atalk.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 static int sock_no_open(struct inode *irrelevant, struct file *dontcare);
 static ssize_t sock_aio_read(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t pos);

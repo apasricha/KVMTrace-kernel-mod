@@ -23,6 +23,9 @@
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 struct fdtable_defer {
 	spinlock_t lock;
 	struct work_struct wq;
@@ -646,8 +649,7 @@ void __fd_install(struct files_struct *files, unsigned int fd,
 	kernel_event.tag = TAG_FILE_OPEN;
 	kernel_event.pid = current->pid;
 	kernel_event.inode = inode->i_ino;
-	kernel_event.major_device = MAJOR(inode->i_devices);
-	kernel_event.minor_device = MINOR(inode->i_devices);
+	kernel_event.device_ID = inode->i_rdev;
 	kernel_event.file_offset =
 	  (file_offset_t)inode->i_size;
 	kernel_event.file_type =
@@ -687,12 +689,11 @@ int __close_fd(struct files_struct *files, unsigned fd)
 	spin_unlock(&files->file_lock);
 
 //VMT: THIS IS THE SAME AS OLD FUNCTION sys_close IN fs/open.c. RECORD BETWEEN spin/write_unlock AND return filp_close
-	inode = filp->f_dentry->d_inode;
+	inode = file->f_dentry->d_inode;
 	kernel_event.tag = TAG_FILE_CLOSE;
 	kernel_event.pid = current->pid;
 	kernel_event.inode = inode->i_ino;
-	kernel_event.major_device = MAJOR(inode->i_devices);
-	kernel_event.minor_device = MINOR(inode->i_devices);
+	kernel_event.device_ID = inode->i_rdev;
 	emit_kernel_record(&kernel_event);
 
 	return filp_close(file, files);

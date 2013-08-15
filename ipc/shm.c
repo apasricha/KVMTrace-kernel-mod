@@ -44,6 +44,9 @@
 
 #include "util.h"
 
+/* kVMTrace */
+#include <linux/kvmtrace.h>
+
 struct shm_file_data {
 	int id;
 	struct ipc_namespace *ns;
@@ -187,10 +190,10 @@ static void shm_open(struct vm_area_struct *vma)
  */
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 {
-//AS IN OLD FUNCTION shm_destroy IN ipc/shm.c, HERE TOO RECORDING IS DONE FIRST THING IN THE FUNCTION, AND BEFORE shm_tot IS CHANGED
+// VMT: AS IN OLD FUNCTION shm_destroy IN ipc/shm.c, HERE TOO RECORDING IS DONE FIRST THING IN THE FUNCTION, AND BEFORE shm_tot IS CHANGED
 	kernel_event.tag = TAG_SHM_DESTROY;
 	kernel_event.pid = current->pid;
-	kernel_event.shm = shp->id;
+	kernel_event.shm = shp->shm_perm.id;
 	emit_kernel_record(&kernel_event);	
 
 	ns->shm_tot -= (shp->shm_segsz + PAGE_SIZE - 1) >> PAGE_SHIFT;
@@ -1101,7 +1104,7 @@ invalid:
 		kernel_event.pid = current->pid;
 		kernel_event.address = (virtual_address_t)user_addr;
 		kernel_event.length = size;
-		kernel_event.shm = shp->id;
+		kernel_event.shm = shp->shm_perm.id;
 		emit_kernel_record(&kernel_event);
 	}
 
