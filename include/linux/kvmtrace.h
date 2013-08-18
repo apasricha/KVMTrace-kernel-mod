@@ -129,6 +129,7 @@ void string_to_string (char* buffer,
 #define FILE_TYPE_PIPE              'p'
 #define FILE_TYPE_DEVICE            'd'
 #define FILE_TYPE_SOCKET            's'
+#define FILE_TYPE_OTHER             'o' /* Used during boot, unclear what these are. */
 
 /* VMT DEBUG */
 extern int kvmtrace_state;

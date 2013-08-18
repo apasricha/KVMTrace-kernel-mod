@@ -22,6 +22,7 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/kvmtrace.h>
+#include <linux/slab.h>
 #include <linux/syscalls.h>
 /* ================================================================== */
 
@@ -60,13 +61,13 @@ struct file* kt_filp = NULL;
  * into this space; when it is nearly full, the kvmtraced thread
  * flushes it.
  */
-char* const kt_buffer = NULL;
+char* kt_buffer = NULL;
 
 /* The current index into the kernel trace buffer. */
 int kt_i = 0;
 
 /* The size of the kernel trace buffer. */
-#define KT_BUFFER_SIZE (64 * 1024) // 64 KB * 1024 B/KB
+#define KT_BUFFER_SIZE (1024 * 1024) // 1024 KB * 1024 B/KB = 1 MB
 
 /*
  * The maximum size of a kernel trace record (calculated, but not with
@@ -268,6 +269,7 @@ flush_kernel_trace (void)
     }
 
     set_fs(old_fs);
+    kt_i = 0;
 
 }
 /* ================================================================== */
@@ -308,9 +310,10 @@ file_type_t determine_file_type (umode_t mode) {
 		file_type = FILE_TYPE_PIPE;
 	} else if (S_ISSOCK(mode)) {
 		file_type = FILE_TYPE_SOCKET;
+	} else {
+		file_type = FILE_TYPE_OTHER;
 	}
 
-	BUG_ON(file_type == '\0');
 	return file_type;
 
 }
@@ -335,6 +338,21 @@ emit_kernel_record (kernel_event_s* kernel_event)
     timestamp_t reference_timestamp;
     cputime_t user_time;
     cputime_t system_time;
+
+    if (unlikely(!kt_buffer)) {
+	    kt_buffer = (char*)kmalloc(KT_BUFFER_SIZE, GFP_KERNEL);
+	    BUG_ON(!kt_buffer);
+	    kt_i = 0;
+    }
+
+    /*
+     * Is kt_i going to far?  If so, sleep (or something).
+     */
+    if (kt_i >= KT_BUFFER_SIZE - KT_MAX_RECORD_SIZE) {
+	    printk(KERN_NOTICE "Buffer needs flushing! Sleeping...\n");
+	    __set_current_state(TASK_INTERRUPTIBLE);
+	    schedule_kvmtraced();
+    }
 
     /*
      * Construct the record by placing the fields into the buffer one
@@ -814,7 +832,7 @@ kvmtraced (void* unused)
 		 * may wake up the thread to attempt the next flush.
 		 */
 		__set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(10 * HZ);
+		schedule_timeout(1000 * HZ);
 
 	}
 
